@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XAUUSD AI Trading Terminal</title>
+    <meta name="description" content="AI-powered XAUUSD gold trading signal dashboard with live news, macro calendar, and 15-minute auto-refresh.">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- AMBIENT -->
+    <div class="ambient-layer">
+        <div class="orb orb-gold"></div>
+        <div class="orb orb-blue"></div>
+        <div class="orb orb-red"></div>
+        <div class="grid-overlay"></div>
+    </div>
+    <div class="scanline"></div>
+
+    <div class="terminal-wrapper">
+
+        <!-- ── TOP NAV ─────────────────────────────────── -->
+        <nav class="top-bar">
+            <div class="top-bar-left">
+                <div class="brand-dot"></div>
+                <span class="brand-name">XAUUSD <span class="brand-accent">AI Terminal</span></span>
+            </div>
+            <div class="top-bar-center">
+                <span class="ticker-label">GOLD SPOT</span>
+                <span class="ticker-price" id="ticker-price">—</span>
+                <span class="signal-pill" id="signal-pill">—</span>
+            </div>
+            <div class="top-bar-right">
+                <div class="live-badge"><span class="live-dot"></span><span>LIVE</span></div>
+                <div class="countdown-wrap" title="Next auto-refresh">
+                    <svg class="countdown-ring" viewBox="0 0 36 36">
+                        <circle class="countdown-bg"  cx="18" cy="18" r="15.9"/>
+                        <circle class="countdown-arc" id="countdown-arc" cx="18" cy="18" r="15.9"/>
+                    </svg>
+                    <span class="countdown-label" id="countdown-label">15:00</span>
+                </div>
+                <div class="timeframe-widget" id="timeframe-widget" onclick="toggleTimeframe()" title="Click to toggle New York / Local time">
+                    <div class="tf-dot"></div>
+                    <span class="tf-label" id="tf-label">NY</span>
+                    <span class="tf-time" id="tf-time">--:--:--</span>
+                </div>
+                <div class="date-badge" id="top-date">—</div>
+            </div>
+        </nav>
+
+        <!-- ── LIVE NEWS TICKER ────────────────────────── -->
+        <div class="ticker-bar">
+            <span class="ticker-tag">LIVE</span>
+            <div class="ticker-scroll-wrap">
+                <div class="ticker-scroll" id="ticker-scroll">
+                    <span class="ticker-placeholder">Fetching live headlines...</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── STALE BANNER ────────────────────────────── -->
+        <div id="stale-banner" class="stale-banner" style="display:none;">
+            <span>⚠</span>
+            <span id="stale-msg">Data is from a previous trading day.</span>
+            <button class="refresh-btn" onclick="triggerRefresh()">↻ Refresh Data</button>
+        </div>
+
+        <!-- ── PAGE TABS ───────────────────────────────── -->
+        <nav class="page-tabs" id="page-tabs">
+            <button class="tab-btn active" data-page="dashboard"  onclick="switchPage('dashboard')">
+                <span class="tab-icon">⚡</span> Dashboard
+            </button>
+            <button class="tab-btn" data-page="analysis"   onclick="switchPage('analysis')">
+                <span class="tab-icon">🧠</span> AI Analysis
+            </button>
+            <button class="tab-btn" data-page="news"       onclick="switchPage('news')">
+                <span class="tab-icon">📰</span> Live News
+                <span class="tab-badge" id="news-count-badge">—</span>
+            </button>
+            <button class="tab-btn" data-page="calendar"   onclick="switchPage('calendar')">
+                <span class="tab-icon">📅</span> Macro Calendar
+            </button>
+            <!-- Last-updated micro bar -->
+            <div class="tab-status">
+                <span class="upd-dot"></span>
+                <span id="tab-update-label">Initialising...</span>
+            </div>
+        </nav>
+
+        <!-- ════════════════════════════════════════════════
+             PAGE 1 — DASHBOARD
+        ═════════════════════════════════════════════════ -->
+        <div id="page-dashboard" class="page active">
+
+            <!-- Row 1: Signal + Execution -->
+            <div class="row-signal-exec">
+
+                <!-- SIGNAL CARD -->
+                <div class="card card-signal" id="signal-card">
+                    <div class="card-label">ALGORITHMIC SIGNAL</div>
+                    <div class="signal-display">
+                        <div class="signal-icon" id="signal-icon">◈</div>
+                        <div class="signal-text" id="signal-value">—</div>
+                    </div>
+                    <div class="confidence-block">
+                        <div class="conf-labels">
+                            <span class="conf-bear">BEAR</span>
+                            <span class="conf-pct" id="prob-up-val">—</span>
+                            <span class="conf-bull">BULL</span>
+                        </div>
+                        <div class="conf-track">
+                            <div class="conf-fill" id="prob-bar"></div>
+                            <div class="conf-needle" id="conf-needle"></div>
+                        </div>
+                    </div>
+                    <!-- Live VADER sentiment -->
+                    <div class="vader-row">
+                        <span class="vader-label">Live Sentiment (VADER)</span>
+                        <span class="vader-badge" id="vader-badge">—</span>
+                    </div>
+                    <!-- Model votes -->
+                    <div class="votes-row">
+                        <div class="vote-item">
+                            <div class="vote-label">CatBoost</div>
+                            <div class="vote-val" id="vote-cat">—</div>
+                        </div>
+                        <div class="vote-divider"></div>
+                        <div class="vote-item">
+                            <div class="vote-label">XGBoost</div>
+                            <div class="vote-val" id="vote-xgb">—</div>
+                        </div>
+                        <div class="vote-divider"></div>
+                        <div class="vote-item">
+                            <div class="vote-label">LightGBM</div>
+                            <div class="vote-val" id="vote-lgb">—</div>
+                        </div>
+                    </div>
+                    <div class="signal-sub" id="signal-sub-text">Awaiting model output...</div>
+                </div>
+
+                <!-- EXECUTION CARD -->
+                <div class="card card-exec">
+                    <div class="card-label">EXECUTION PLAN</div>
+                    <div class="exec-grid">
+                        <div class="exec-item">
+                            <div class="exec-label">ENTRY PRICE</div>
+                            <div class="exec-val" id="entry-val">—</div>
+                        </div>
+                        <div class="exec-item">
+                            <div class="exec-label">ATR (14-day)</div>
+                            <div class="exec-val text-muted" id="atr-val">—</div>
+                        </div>
+                        <div class="exec-item exec-sl">
+                            <div class="exec-label">STOP LOSS <span class="exec-badge">0.4×ATR</span></div>
+                            <div class="exec-val text-red" id="sl-val">—</div>
+                        </div>
+                        <div class="exec-item exec-tp">
+                            <div class="exec-label">TAKE PROFIT <span class="exec-badge">0.8×ATR</span></div>
+                            <div class="exec-val text-green" id="tp-val">—</div>
+                        </div>
+                    </div>
+                    <div class="rr-bar-wrap">
+                        <span class="rr-label">Risk : Reward Ratio</span>
+                        <span class="rr-value">1 : 2</span>
+                    </div>
+                    <!-- Intraday pivot levels summary -->
+                    <div class="card-label" style="margin-top:20px;">INTRADAY PIVOT LEVELS</div>
+                    <div class="levels-track">
+                        <div class="level-row">
+                            <span class="level-tag">R2</span>
+                            <div class="level-bar"><div class="level-fill resistance-fill" style="width:92%"></div></div>
+                            <span class="level-val text-red"   id="r2-val">—</span>
+                        </div>
+                        <div class="level-row">
+                            <span class="level-tag">R1</span>
+                            <div class="level-bar"><div class="level-fill resistance-fill" style="width:75%"></div></div>
+                            <span class="level-val text-red"   id="r1-val">—</span>
+                        </div>
+                        <div class="level-row">
+                            <span class="level-tag pivot-tag">PP</span>
+                            <div class="level-bar"><div class="level-fill pivot-fill"      style="width:50%"></div></div>
+                            <span class="level-val text-gold"  id="pp-val">—</span>
+                        </div>
+                        <div class="level-row">
+                            <span class="level-tag">S1</span>
+                            <div class="level-bar"><div class="level-fill support-fill"    style="width:75%"></div></div>
+                            <span class="level-val text-green" id="s1-val">—</span>
+                        </div>
+                        <div class="level-row">
+                            <span class="level-tag">S2</span>
+                            <div class="level-bar"><div class="level-fill support-fill"    style="width:92%"></div></div>
+                            <span class="level-val text-green" id="s2-val">—</span>
+                        </div>
+                    </div>
+                </div>
+            </div><!-- /row-signal-exec -->
+
+            <!-- Row 2: Live Risk Monitor + Sessions -->
+            <div class="row-monitor-sessions">
+                <!-- RISK ALERT CARD -->
+                <div class="card card-monitor">
+                    <div class="card-label">LIVE RISK MONITOR & TRADE ALERTS</div>
+                    <div class="monitor-content" id="monitor-content">
+                        <div class="monitor-status" id="monitor-status">
+                            <span class="monitor-icon" id="monitor-icon">🛡️</span>
+                            <span class="monitor-state" id="monitor-state">MONITORING</span>
+                        </div>
+                        <div class="monitor-alert" id="monitor-alert">
+                            Initialising monitor logic... Standing by for incoming market feeds.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SESSIONS CARD -->
+                <div class="card card-sessions">
+                    <div class="card-label">GLOBAL TRADING SESSIONS (UTC)</div>
+                    <div class="sessions-grid" id="sessions-grid">
+                        <div class="session-item" id="sess-asian">
+                            <span class="sess-dot"></span>
+                            <span class="sess-name">ASIAN (Tokyo)</span>
+                            <span class="sess-status">—</span>
+                        </div>
+                        <div class="session-item" id="sess-london">
+                            <span class="sess-dot"></span>
+                            <span class="sess-name">LONDON</span>
+                            <span class="sess-status">—</span>
+                        </div>
+                        <div class="session-item" id="sess-ny">
+                            <span class="sess-dot"></span>
+                            <span class="sess-name">NEW YORK</span>
+                            <span class="sess-status">—</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div><!-- /#page-dashboard -->
+
+        <!-- ════════════════════════════════════════════════
+             PAGE 2 — AI ANALYSIS
+        ═════════════════════════════════════════════════ -->
+        <div id="page-analysis" class="page">
+
+            <!-- Plain English Narrative -->
+            <div class="card card-narrative">
+                <div class="card-label">WHY THIS SIGNAL? — PLAIN ENGLISH EXPLANATION</div>
+                <div id="narrative-block" class="narrative-block">
+                    <p class="narrative-reasoning" style="color:var(--text-3);">Loading AI reasoning...</p>
+                </div>
+            </div>
+
+            <!-- SHAP Drivers -->
+            <div class="card" style="margin-top:20px;">
+                <div class="card-label">AI SIGNAL FACTORS (SHAP Feature Importance)</div>
+                <div id="shap-list" class="shap-list"></div>
+            </div>
+
+            <!-- Model vote detail -->
+            <div class="card" style="margin-top:20px;">
+                <div class="card-label">ENSEMBLE MODEL BREAKDOWN</div>
+                <div class="model-detail-grid" id="model-detail">
+                    <div class="model-detail-item">
+                        <div class="model-name">CatBoost</div>
+                        <div class="model-bar-wrap">
+                            <div class="model-bar" id="bar-cat"></div>
+                        </div>
+                        <div class="model-val" id="dval-cat">—</div>
+                    </div>
+                    <div class="model-detail-item">
+                        <div class="model-name">XGBoost</div>
+                        <div class="model-bar-wrap">
+                            <div class="model-bar" id="bar-xgb"></div>
+                        </div>
+                        <div class="model-val" id="dval-xgb">—</div>
+                    </div>
+                    <div class="model-detail-item">
+                        <div class="model-name">LightGBM</div>
+                        <div class="model-bar-wrap">
+                            <div class="model-bar" id="bar-lgb"></div>
+                        </div>
+                        <div class="model-val" id="dval-lgb">—</div>
+                    </div>
+                    <div class="model-detail-item">
+                        <div class="model-name">Meta-Learner (Final)</div>
+                        <div class="model-bar-wrap">
+                            <div class="model-bar model-bar-meta" id="bar-meta"></div>
+                        </div>
+                        <div class="model-val" id="dval-meta">—</div>
+                    </div>
+                </div>
+            </div>
+
+        </div><!-- /#page-analysis -->
+
+        <!-- ════════════════════════════════════════════════
+             PAGE 3 — LIVE NEWS
+        ═════════════════════════════════════════════════ -->
+        <div id="page-news" class="page">
+
+            <!-- Filter bar -->
+            <div class="news-filters">
+                <button class="filter-btn active" onclick="filterNews('ALL',this)">All</button>
+                <button class="filter-btn" onclick="filterNews('BULLISH',this)">▲ Bullish</button>
+                <button class="filter-btn" onclick="filterNews('BEARISH',this)">▼ Bearish</button>
+                <button class="filter-btn" onclick="filterNews('NEUTRAL',this)">— Neutral</button>
+                <span class="news-count-label" id="news-total-label">Loading...</span>
+            </div>
+
+            <div id="full-news-list" class="full-news-list"></div>
+
+        </div><!-- /#page-news -->
+
+        <!-- ════════════════════════════════════════════════
+             PAGE 4 — MACRO CALENDAR
+        ═════════════════════════════════════════════════ -->
+        <div id="page-calendar" class="page">
+
+            <div class="calendar-header-row">
+                <div class="cal-legend">
+                    <span class="leg-dot" style="background:var(--red)"></span> HIGH Impact &nbsp;
+                    <span class="leg-dot" style="background:var(--amber)"></span> MEDIUM &nbsp;
+                    <span class="leg-dot" style="background:var(--blue)"></span> LOW
+                </div>
+            </div>
+
+            <div id="full-calendar-list" class="full-calendar-list"></div>
+
+        </div><!-- /#page-calendar -->
+
+        <!-- LOADER OVERLAY -->
+        <div id="loader" class="loader-wrap">
+            <div class="loader-inner">
+                <div class="loader-ring"></div>
+                <div class="loader-text">
+                    <span class="loader-label">LOADING</span>
+                    <span class="loader-sub">Fetching live news & running 3-model ensemble...</span>
+                </div>
+            </div>
+        </div>
+
+    </div><!-- /.terminal-wrapper -->
+    <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+env/
+venv/
+
+# Large Datasets and Generated Data
+*.csv
+!*sample*.csv
+
+# Models and serialized objects
+catboost_info/
+*.cbm
+*.pkl
+lgb_prod.txt
+xgb_prod.json
