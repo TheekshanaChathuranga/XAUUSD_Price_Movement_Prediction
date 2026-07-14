@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>XAUUSD AI Trading Terminal</title>
-    <meta name="description" content="AI-powered XAUUSD gold trading signal dashboard with live news, macro calendar, and 15-minute auto-refresh.">
+    <title>XAUUSD AI Trading Terminal — Dual-Timeframe</title>
+    <meta name="description" content="AI-powered XAUUSD gold trading signal dashboard with dual-timeframe scalp/swing signals, confidence tiers, and smart timing.">
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <link rel="stylesheet" href="/static/style.css">
@@ -28,9 +28,27 @@
                 <span class="brand-name">XAUUSD <span class="brand-accent">AI Terminal</span></span>
             </div>
             <div class="top-bar-center">
-                <span class="ticker-label">GOLD SPOT</span>
-                <span class="ticker-price" id="ticker-price">—</span>
-                <span class="signal-pill" id="signal-pill">—</span>
+                <div class="tv-ticker-wrap">
+                    <!-- TradingView Widget BEGIN -->
+                    <div class="tradingview-widget-container">
+                        <div class="tradingview-widget-container__widget"></div>
+                        <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-single-quote.js" async>
+                        {
+                        "symbol": "OANDA:XAUUSD",
+                        "width": "200",
+                        "isTransparent": true,
+                        "colorTheme": "dark",
+                        "locale": "en"
+                        }
+                        </script>
+                    </div>
+                    <!-- TradingView Widget END -->
+                </div>
+                <!-- Dual pills: Scalp | Swing -->
+                <div class="dual-pills">
+                    <span class="signal-pill pill-mini" id="pill-scalp" title="Scalp Signal">⚡—</span>
+                    <span class="signal-pill pill-mini" id="pill-swing" title="Swing Signal">🎯—</span>
+                </div>
             </div>
             <div class="top-bar-right">
                 <div class="live-badge"><span class="live-dot"></span><span>LIVE</span></div>
@@ -82,6 +100,9 @@
             <button class="tab-btn" data-page="calendar"   onclick="switchPage('calendar')">
                 <span class="tab-icon">📅</span> Macro Calendar
             </button>
+            <button class="tab-btn" data-page="history"    onclick="switchPage('history')">
+                <span class="tab-icon">⏳</span> History
+            </button>
             <!-- Last-updated micro bar -->
             <div class="tab-status">
                 <span class="upd-dot"></span>
@@ -90,20 +111,74 @@
         </nav>
 
         <!-- ════════════════════════════════════════════════
-             PAGE 1 — DASHBOARD
+             PAGE 1 — DASHBOARD (REDESIGNED: Dual-Timeframe)
         ═════════════════════════════════════════════════ -->
         <div id="page-dashboard" class="page active">
 
-            <!-- Row 1: Signal + Execution -->
-            <div class="row-signal-exec">
+            <!-- Row 1: Dual Timeframe Signal Cards -->
+            <div class="row-dual-signals">
 
-                <!-- SIGNAL CARD -->
-                <div class="card card-signal" id="signal-card">
-                    <div class="card-label">ALGORITHMIC SIGNAL</div>
-                    <div class="signal-display">
-                        <div class="signal-icon" id="signal-icon">◈</div>
-                        <div class="signal-text" id="signal-value">—</div>
+                <!-- SCALP SIGNAL CARD -->
+                <div class="card card-tf card-scalp" id="card-scalp">
+                    <div class="tf-header">
+                        <span class="tf-badge tf-badge-scalp">⚡ SCALP</span>
+                        <span class="tf-horizon">4–8 hours</span>
                     </div>
+                    <div class="tf-signal-display">
+                        <div class="tf-signal-icon" id="scalp-icon">◈</div>
+                        <div class="tf-signal-text" id="scalp-signal">—</div>
+                    </div>
+                    <div class="strength-row">
+                        <span class="strength-badge" id="scalp-strength">—</span>
+                    </div>
+                    <div class="tf-levels">
+                        <div class="tf-level-item tf-sl">
+                            <span class="tf-level-label">SL <span class="exec-badge">0.4×ATR</span></span>
+                            <span class="tf-level-val" id="scalp-sl">—</span>
+                        </div>
+                        <div class="tf-level-item tf-tp">
+                            <span class="tf-level-label">TP <span class="exec-badge">0.8×ATR</span></span>
+                            <span class="tf-level-val" id="scalp-tp">—</span>
+                        </div>
+                    </div>
+                    <div class="rr-bar-wrap">
+                        <span class="rr-label">Risk : Reward</span>
+                        <span class="rr-value">1 : 2</span>
+                    </div>
+                </div>
+
+                <!-- SWING SIGNAL CARD -->
+                <div class="card card-tf card-swing" id="card-swing">
+                    <div class="tf-header">
+                        <span class="tf-badge tf-badge-swing">🎯 SWING</span>
+                        <span class="tf-horizon">1–3 days</span>
+                    </div>
+                    <div class="tf-signal-display">
+                        <div class="tf-signal-icon" id="swing-icon">◈</div>
+                        <div class="tf-signal-text" id="swing-signal">—</div>
+                    </div>
+                    <div class="strength-row">
+                        <span class="strength-badge" id="swing-strength">—</span>
+                    </div>
+                    <div class="tf-levels">
+                        <div class="tf-level-item tf-sl">
+                            <span class="tf-level-label">SL <span class="exec-badge">1.5×ATR</span></span>
+                            <span class="tf-level-val" id="swing-sl">—</span>
+                        </div>
+                        <div class="tf-level-item tf-tp">
+                            <span class="tf-level-label">TP <span class="exec-badge">3.0×ATR</span></span>
+                            <span class="tf-level-val" id="swing-tp">—</span>
+                        </div>
+                    </div>
+                    <div class="rr-bar-wrap">
+                        <span class="rr-label">Risk : Reward</span>
+                        <span class="rr-value">1 : 2</span>
+                    </div>
+                </div>
+
+                <!-- PROBABILITY + MODELS CARD -->
+                <div class="card card-prob">
+                    <div class="card-label">ENSEMBLE PROBABILITY</div>
                     <div class="confidence-block">
                         <div class="conf-labels">
                             <span class="conf-bear">BEAR</span>
@@ -115,29 +190,62 @@
                             <div class="conf-needle" id="conf-needle"></div>
                         </div>
                     </div>
-                    <!-- Live VADER sentiment -->
+                    <!-- VADER -->
                     <div class="vader-row">
                         <span class="vader-label">Live Sentiment (VADER)</span>
                         <span class="vader-badge" id="vader-badge">—</span>
                     </div>
                     <!-- Model votes -->
                     <div class="votes-row">
-                        <div class="vote-item">
-                            <div class="vote-label">CatBoost</div>
-                            <div class="vote-val" id="vote-cat">—</div>
-                        </div>
+                        <div class="vote-item"><div class="vote-label">CatBoost</div><div class="vote-val" id="vote-cat">—</div></div>
                         <div class="vote-divider"></div>
-                        <div class="vote-item">
-                            <div class="vote-label">XGBoost</div>
-                            <div class="vote-val" id="vote-xgb">—</div>
-                        </div>
+                        <div class="vote-item"><div class="vote-label">XGBoost</div><div class="vote-val" id="vote-xgb">—</div></div>
                         <div class="vote-divider"></div>
-                        <div class="vote-item">
-                            <div class="vote-label">LightGBM</div>
-                            <div class="vote-val" id="vote-lgb">—</div>
-                        </div>
+                        <div class="vote-item"><div class="vote-label">LightGBM</div><div class="vote-val" id="vote-lgb">—</div></div>
                     </div>
-                    <div class="signal-sub" id="signal-sub-text">Awaiting model output...</div>
+                    <!-- Consensus badge -->
+                    <div class="consensus-row">
+                        <span id="consensus-badge" class="consensus-badge consensus-neutral">&#9674; NEUTRAL</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Row 2: Smart Timing + Execution -->
+            <div class="row-timing-exec">
+
+                <!-- SMART TIMING CARD -->
+                <div class="card card-timing">
+                    <div class="card-label">🕐 SMART SIGNAL TIMING</div>
+
+                    <!-- Session indicator -->
+                    <div class="timing-session" id="timing-session">
+                        <span class="timing-session-dot"></span>
+                        <span class="timing-session-label" id="timing-session-label">—</span>
+                    </div>
+
+                    <!-- Proximity bar (how close to signal) -->
+                    <div class="proximity-block" id="proximity-block" style="display:none;">
+                        <div class="proximity-label">
+                            <span>Signal proximity</span>
+                            <span class="proximity-pct" id="proximity-pct">0%</span>
+                        </div>
+                        <div class="proximity-track">
+                            <div class="proximity-fill" id="proximity-fill"></div>
+                        </div>
+                        <div class="proximity-hint" id="proximity-hint">Approaching LONG threshold</div>
+                    </div>
+
+                    <!-- Next signal window -->
+                    <div class="timing-next" id="timing-next">
+                        <div class="timing-next-label">NEXT SIGNAL WINDOW</div>
+                        <div class="timing-next-text" id="timing-next-text">Loading...</div>
+                    </div>
+
+                    <!-- What would flip this? -->
+                    <div class="flip-conditions" id="flip-conditions" style="display:none;">
+                        <div class="flip-header">WHAT WOULD TRIGGER A SIGNAL?</div>
+                        <ul class="flip-list" id="flip-list"></ul>
+                    </div>
                 </div>
 
                 <!-- EXECUTION CARD -->
@@ -152,20 +260,8 @@
                             <div class="exec-label">ATR (14-day)</div>
                             <div class="exec-val text-muted" id="atr-val">—</div>
                         </div>
-                        <div class="exec-item exec-sl">
-                            <div class="exec-label">STOP LOSS <span class="exec-badge">0.4×ATR</span></div>
-                            <div class="exec-val text-red" id="sl-val">—</div>
-                        </div>
-                        <div class="exec-item exec-tp">
-                            <div class="exec-label">TAKE PROFIT <span class="exec-badge">0.8×ATR</span></div>
-                            <div class="exec-val text-green" id="tp-val">—</div>
-                        </div>
                     </div>
-                    <div class="rr-bar-wrap">
-                        <span class="rr-label">Risk : Reward Ratio</span>
-                        <span class="rr-value">1 : 2</span>
-                    </div>
-                    <!-- Intraday pivot levels summary -->
+                    <!-- Intraday pivot levels -->
                     <div class="card-label" style="margin-top:20px;">INTRADAY PIVOT LEVELS</div>
                     <div class="levels-track">
                         <div class="level-row">
@@ -195,9 +291,9 @@
                         </div>
                     </div>
                 </div>
-            </div><!-- /row-signal-exec -->
+            </div>
 
-            <!-- Row 2: Live Risk Monitor + Sessions -->
+            <!-- Row 3: Risk Monitor + Sessions -->
             <div class="row-monitor-sessions">
                 <!-- RISK ALERT CARD -->
                 <div class="card card-monitor">
@@ -263,30 +359,22 @@
                 <div class="model-detail-grid" id="model-detail">
                     <div class="model-detail-item">
                         <div class="model-name">CatBoost</div>
-                        <div class="model-bar-wrap">
-                            <div class="model-bar" id="bar-cat"></div>
-                        </div>
+                        <div class="model-bar-wrap"><div class="model-bar" id="bar-cat"></div></div>
                         <div class="model-val" id="dval-cat">—</div>
                     </div>
                     <div class="model-detail-item">
                         <div class="model-name">XGBoost</div>
-                        <div class="model-bar-wrap">
-                            <div class="model-bar" id="bar-xgb"></div>
-                        </div>
+                        <div class="model-bar-wrap"><div class="model-bar" id="bar-xgb"></div></div>
                         <div class="model-val" id="dval-xgb">—</div>
                     </div>
                     <div class="model-detail-item">
                         <div class="model-name">LightGBM</div>
-                        <div class="model-bar-wrap">
-                            <div class="model-bar" id="bar-lgb"></div>
-                        </div>
+                        <div class="model-bar-wrap"><div class="model-bar" id="bar-lgb"></div></div>
                         <div class="model-val" id="dval-lgb">—</div>
                     </div>
                     <div class="model-detail-item">
                         <div class="model-name">Meta-Learner (Final)</div>
-                        <div class="model-bar-wrap">
-                            <div class="model-bar model-bar-meta" id="bar-meta"></div>
-                        </div>
+                        <div class="model-bar-wrap"><div class="model-bar model-bar-meta" id="bar-meta"></div></div>
                         <div class="model-val" id="dval-meta">—</div>
                     </div>
                 </div>
@@ -298,25 +386,29 @@
              PAGE 3 — LIVE NEWS
         ═════════════════════════════════════════════════ -->
         <div id="page-news" class="page">
-
-            <!-- Filter bar -->
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h3 style="color: var(--t2); font-size: 0.9rem; margin:0;">MACRO FINANCIAL HEADLINES</h3>
+                <span style="font-size: 0.75rem; color: var(--gold); border: 1px solid var(--gold-dim); padding: 4px 8px; border-radius: 4px; background: rgba(245,200,66,0.05); font-family: var(--mono);">
+                    ⚙️ Sentiment Powered by FinBERT
+                </span>
+            </div>
             <div class="news-filters">
                 <button class="filter-btn active" onclick="filterNews('ALL',this)">All</button>
                 <button class="filter-btn" onclick="filterNews('BULLISH',this)">▲ Bullish</button>
                 <button class="filter-btn" onclick="filterNews('BEARISH',this)">▼ Bearish</button>
                 <button class="filter-btn" onclick="filterNews('NEUTRAL',this)">— Neutral</button>
+                <button class="filter-btn filter-geo" onclick="filterNews('GEO',this)">🪖 Geo/Military</button>
+                <button class="filter-btn filter-fed" onclick="filterNews('FED',this)">🏦 Fed/CB</button>
                 <span class="news-count-label" id="news-total-label">Loading...</span>
             </div>
 
             <div id="full-news-list" class="full-news-list"></div>
-
         </div><!-- /#page-news -->
 
         <!-- ════════════════════════════════════════════════
              PAGE 4 — MACRO CALENDAR
         ═════════════════════════════════════════════════ -->
         <div id="page-calendar" class="page">
-
             <div class="calendar-header-row">
                 <div class="cal-legend">
                     <span class="leg-dot" style="background:var(--red)"></span> HIGH Impact &nbsp;
@@ -324,10 +416,70 @@
                     <span class="leg-dot" style="background:var(--blue)"></span> LOW
                 </div>
             </div>
-
             <div id="full-calendar-list" class="full-calendar-list"></div>
-
         </div><!-- /#page-calendar -->
+
+        <!-- ════════════════════════════════════════════════
+             PAGE 5 — HISTORY (DUAL: SCALP + SWING)
+        ═════════════════════════════════════════════════ -->
+        <div id="page-history" class="page">
+            <!-- Timeframe sub-tab buttons -->
+            <div class="history-tab-row">
+                <button class="htab-btn active" id="htab-scalp" onclick="switchHistoryTab('scalp')">
+                    ⚡ SCALP <span class="htab-sub">0.4× / 0.8× ATR</span>
+                </button>
+                <button class="htab-btn" id="htab-swing" onclick="switchHistoryTab('swing')">
+                    🎯 SWING <span class="htab-sub">1.5× / 3.0× ATR</span>
+                </button>
+            </div>
+
+            <!-- SCALP panel -->
+            <div id="history-panel-scalp" class="history-panel active">
+                <div id="history-stats-scalp" class="history-stats-row"></div>
+                <div class="table-wrap">
+                    <table class="history-table">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Signal</th>
+                                <th>Strength</th>
+                                <th>Probability</th>
+                                <th>Stop Loss</th>
+                                <th>Take Profit</th>
+                                <th>Result</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-tbody-scalp">
+                            <tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text-2);">Loading history...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- SWING panel -->
+            <div id="history-panel-swing" class="history-panel">
+                <div id="history-stats-swing" class="history-stats-row"></div>
+                <div class="table-wrap">
+                    <table class="history-table">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Signal</th>
+                                <th>Strength</th>
+                                <th>Probability</th>
+                                <th>Stop Loss</th>
+                                <th>Take Profit</th>
+                                <th>Result</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-tbody-swing">
+                            <tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text-2);">Loading history...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div><!-- /#page-history -->
+
 
         <!-- LOADER OVERLAY -->
         <div id="loader" class="loader-wrap">

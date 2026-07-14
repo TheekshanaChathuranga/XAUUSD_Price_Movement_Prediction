@@ -47,7 +47,10 @@ def run_step(label, script):
     print(f"  ▶  {label}")
     print(f"{'─'*60}")
     t0 = time.time()
-    result = subprocess.run([sys.executable, path])
+    # BUG FIX: Pass environment with FRED_API_KEY explicitly so subprocess inherits it
+    env = os.environ.copy()
+    env["FRED_API_KEY"] = os.getenv("FRED_API_KEY", "")
+    result = subprocess.run([sys.executable, path], env=env)
     elapsed = time.time() - t0
     ok = result.returncode == 0
     print(f"\n  {'OK' if ok else 'FAILED'}  ({elapsed:.1f}s)")

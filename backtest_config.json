@@ -1,0 +1,16 @@
+{
+  "percentile_long": 70,
+  "percentile_short": 30,
+  "long_threshold_actual": 0.5957974445955216,
+  "short_threshold_actual": 0.586030270749003,
+  "confidence_band": 0.65,
+  "entry_tc_bps": 2.9999999999999996,
+  "exit_tc_bps": 2.0,
+  "vol_target": 0.15,
+  "vol_lookback": 20,
+  "initial_capital": 10000.0,
+  "net_sharpe": -0.5685838277502018,
+  "net_roi_pct": -1.5371402692590963,
+  "vol_adj_sharpe": -1.0500267974785265,
+  "vol_adj_roi_pct": -2.147521972023514
+}

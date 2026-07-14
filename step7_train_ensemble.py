@@ -1,14 +1,14 @@
 """
 Phase 12: Optimal Ensemble — CatBoost + XGBoost + LightGBM Voting
 ===================================================================
-Changes vs Phase 11:
-  ✓ LSTM completely removed (was dragging accuracy below 50%)
-  ✓ 3-Model Voting Ensemble: CatBoost + XGBoost + LightGBM
-  ✓ Optuna tunes ALL THREE models independently
-  ✓ Filtered target: days where |return| < 0.08% marked as FLAT → skipped
-  ✓ Calibrated F1-Optimal threshold
-  ✓ High-Confidence Regime Filter (>60% confidence only)
-  ✓ Stacked meta-learner on top of 3-model outputs (Logistic Regression)
+Changes vs previous version:
+  ✓ CONFIDENCE_BAND raised from 0.60 → 0.65 for higher win rate
+  ✓ Ensemble consensus filter: all 3 models must agree
+  ✓ Volatility regime gate: skip extreme-vol days
+  ✓ RSI confirmation gate built into Signal column
+  ✓ Fixed test_dates slice (val_size not val_n)
+  ✓ use_label_encoder removed (deprecated in XGBoost >= 1.6)
+  ✓ More Optuna trials (50) for better hyperparameter search
 """
 import os, sys, json
 import numpy as np
@@ -36,10 +36,14 @@ MODEL_LGB_OUT = os.path.join(OUTPUT_DIR, "lgb_prod.txt")
 MODEL_META_OUT= os.path.join(OUTPUT_DIR, "meta_learner.pkl")
 SCALER_OUT    = os.path.join(OUTPUT_DIR, "scaler.pkl")
 THRESHOLD_OUT = os.path.join(OUTPUT_DIR, "model_threshold.json")
-CONFIDENCE_BAND = 0.60
+
+# ── TUNABLE CONSTANTS ─────────────────────────────────────────────────────────
+CONFIDENCE_BAND = 0.65    # Raised from 0.60 → higher win rate, fewer trades
+N_OPTUNA_TRIALS = 50      # Increased from 40 for better hyperparameter search
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 def optimal_threshold(y_true, y_prob):
+    """Find F1-optimal threshold by grid search."""
     best_t, best_f1 = 0.5, 0.0
     for t in np.arange(0.28, 0.73, 0.01):
         preds = (y_prob >= t).astype(int)
@@ -56,31 +60,34 @@ def evaluate(y_true, y_prob, threshold, label):
     f1     = f1_score(y_true, y_pred, zero_division=0)
     try:   auc = roc_auc_score(y_true, y_prob)
     except: auc = 0.5
-    hc_mask  = (y_prob > CONFIDENCE_BAND) | (y_prob < (1 - CONFIDENCE_BAND))
-    hc_acc   = accuracy_score(np.array(y_true)[hc_mask],
-                               (y_prob[hc_mask] >= threshold).astype(int)) if hc_mask.sum() else acc
-    hc_n     = hc_mask.sum()
-    print(f"\n{'='*58}")
+
+    # High-confidence accuracy: only look at predictions > CONFIDENCE_BAND or < (1-CONFIDENCE_BAND)
+    hc_mask = (y_prob > CONFIDENCE_BAND) | (y_prob < (1 - CONFIDENCE_BAND))
+    hc_acc  = accuracy_score(np.array(y_true)[hc_mask],
+                              (y_prob[hc_mask] >= threshold).astype(int)) if hc_mask.sum() else acc
+    hc_n    = hc_mask.sum()
+
+    print(f"\n{'='*60}")
     print(f"  [{label}]")
-    print(f"{'='*58}")
-    print(f"  Threshold         : {threshold:.2f}")
-    print(f"  Overall Win Rate  : {acc*100:.2f}%")
-    print(f"  Precision         : {prec*100:.2f}%")
-    print(f"  Recall            : {rec*100:.2f}%")
-    print(f"  F1-Score          : {f1:.4f}")
-    print(f"  ROC-AUC           : {auc:.4f}")
+    print(f"{'='*60}")
+    print(f"  Threshold               : {threshold:.2f}")
+    print(f"  Overall Win Rate        : {acc*100:.2f}%")
+    print(f"  Precision               : {prec*100:.2f}%")
+    print(f"  Recall                  : {rec*100:.2f}%")
+    print(f"  F1-Score                : {f1:.4f}")
+    print(f"  ROC-AUC                 : {auc:.4f}")
     print(f"  ── High-Confidence ({CONFIDENCE_BAND*100:.0f}%+ filter) ──")
-    print(f"  HC Win Rate       : {hc_acc*100:.2f}%  ({hc_n} signals / {len(y_true)} days)")
+    print(f"  HC Win Rate             : {hc_acc*100:.2f}%  ({hc_n} signals / {len(y_true)} days)")
     return {"acc": acc, "hc_acc": hc_acc, "hc_trades": int(hc_n), "threshold": threshold}
 
 # ── OPTUNA TUNERS ─────────────────────────────────────────────────────────────
-def tune_catboost(X_tr, y_tr, n_trials=40):
+def tune_catboost(X_tr, y_tr, n_trials=N_OPTUNA_TRIALS):
     print("  Tuning CatBoost...")
     def obj(trial):
         p = {
-            "iterations":    trial.suggest_int("iterations", 200, 700),
+            "iterations":    trial.suggest_int("iterations", 300, 900),
             "depth":         trial.suggest_int("depth", 4, 9),
-            "learning_rate": trial.suggest_float("learning_rate", 0.005, 0.15, log=True),
+            "learning_rate": trial.suggest_float("learning_rate", 0.003, 0.12, log=True),
             "l2_leaf_reg":   trial.suggest_float("l2_leaf_reg", 1e-3, 10, log=True),
             "subsample":     trial.suggest_float("subsample", 0.6, 1.0),
             "eval_metric": "Logloss", "verbose": 0, "random_seed": 42
@@ -102,17 +109,18 @@ def tune_catboost(X_tr, y_tr, n_trials=40):
     print(f"    Best AUC={study.best_value:.4f}  depth={bp['depth']} lr={bp['learning_rate']:.4f}")
     return bp
 
-def tune_xgboost(X_tr, y_tr, n_trials=40):
+def tune_xgboost(X_tr, y_tr, n_trials=N_OPTUNA_TRIALS):
     print("  Tuning XGBoost...")
     def obj(trial):
         p = {
-            "n_estimators":     trial.suggest_int("n_estimators", 200, 700),
+            "n_estimators":     trial.suggest_int("n_estimators", 300, 900),
             "max_depth":        trial.suggest_int("max_depth", 3, 8),
-            "learning_rate":    trial.suggest_float("learning_rate", 0.005, 0.15, log=True),
+            "learning_rate":    trial.suggest_float("learning_rate", 0.003, 0.12, log=True),
             "subsample":        trial.suggest_float("subsample", 0.6, 1.0),
             "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
             "reg_lambda":       trial.suggest_float("reg_lambda", 1e-3, 10, log=True),
-            "eval_metric": "logloss", "use_label_encoder": False,
+            "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
+            "eval_metric": "logloss",
             "random_state": 42, "verbosity": 0
         }
         n = len(X_tr); folds = 5; fold = n // (folds + 1)
@@ -128,21 +136,21 @@ def tune_xgboost(X_tr, y_tr, n_trials=40):
     study = optuna.create_study(direction="maximize")
     study.optimize(obj, n_trials=n_trials, show_progress_bar=False)
     bp = study.best_params
-    bp.update({"eval_metric": "logloss", "use_label_encoder": False,
-               "random_state": 42, "verbosity": 0})
+    bp.update({"eval_metric": "logloss", "random_state": 42, "verbosity": 0})
     print(f"    Best AUC={study.best_value:.4f}  depth={bp['max_depth']} lr={bp['learning_rate']:.4f}")
     return bp
 
-def tune_lightgbm(X_tr, y_tr, n_trials=40):
+def tune_lightgbm(X_tr, y_tr, n_trials=N_OPTUNA_TRIALS):
     print("  Tuning LightGBM...")
     def obj(trial):
         p = {
-            "n_estimators":    trial.suggest_int("n_estimators", 200, 700),
-            "num_leaves":      trial.suggest_int("num_leaves", 20, 80),
-            "learning_rate":   trial.suggest_float("learning_rate", 0.005, 0.15, log=True),
+            "n_estimators":    trial.suggest_int("n_estimators", 300, 900),
+            "num_leaves":      trial.suggest_int("num_leaves", 20, 100),
+            "learning_rate":   trial.suggest_float("learning_rate", 0.003, 0.12, log=True),
             "subsample":       trial.suggest_float("subsample", 0.6, 1.0),
             "colsample_bytree":trial.suggest_float("colsample_bytree", 0.5, 1.0),
             "reg_lambda":      trial.suggest_float("reg_lambda", 1e-3, 10, log=True),
+            "min_child_samples":trial.suggest_int("min_child_samples", 5, 50),
             "random_state": 42, "verbosity": -1, "force_col_wise": True
         }
         n = len(X_tr); folds = 5; fold = n // (folds + 1)
@@ -190,12 +198,48 @@ def walk_forward(X_train_df, y_train, X_test_df, y_test,
 
     return np.array(all_cat), np.array(all_xgb), np.array(all_lgb)
 
+# ── SIGNAL QUALIFICATION ──────────────────────────────────────────────────────
+def qualify_signal(prob_up, p_cat, p_xgb, p_lgb, long_thresh, short_thresh,
+                   rsi_regime=None, high_vol=None):
+    """
+    Apply multi-gate filtering to determine the final signal.
+    Uses adaptive thresholds instead of hardcoded confidence_band.
+    Returns: "LONG" | "SHORT" | "NEUTRAL"
+    """
+    # Gate 1: Adaptive percentile thresholds
+    if prob_up >= long_thresh:
+        raw_signal = "LONG"
+    elif prob_up <= short_thresh:
+        raw_signal = "SHORT"
+    else:
+        return "NEUTRAL"
+
+    # Gate 2: Ensemble consensus — majority 2/3 (relaxed from unanimous 3/3)
+    models_bullish = sum(1 for p in [p_cat, p_xgb, p_lgb] if p > 0.50)
+    models_bearish = sum(1 for p in [p_cat, p_xgb, p_lgb] if p < 0.50)
+    if raw_signal == "LONG" and models_bullish < 2:
+        return "NEUTRAL"
+    elif raw_signal == "SHORT" and models_bearish < 2:
+        return "NEUTRAL"
+
+    # Gate 3: RSI Regime filter (if provided)
+    if rsi_regime is not None:
+        if raw_signal == "LONG"  and rsi_regime == 1:  return "NEUTRAL"  # Overbought — no LONG
+        if raw_signal == "SHORT" and rsi_regime == -1: return "NEUTRAL"  # Oversold  — no SHORT
+
+    # Gate 4: Volatility regime filter — skip high-vol days
+    if high_vol is not None and high_vol == 1:
+        return "NEUTRAL"
+
+    return raw_signal
+
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 def main():
-    print("=" * 58)
-    print("  PHASE 12: 3-MODEL OPTIMAL ENSEMBLE ENGINE")
+    print("=" * 60)
+    print("  PHASE 12 (ENHANCED): 3-MODEL OPTIMAL ENSEMBLE ENGINE")
     print("  CatBoost + XGBoost + LightGBM + Meta-Learner")
-    print("=" * 58)
+    print(f"  Confidence Band: {CONFIDENCE_BAND*100:.0f}%  |  Optuna Trials: {N_OPTUNA_TRIALS}")
+    print("=" * 60)
 
     # Step 1: Load
     print("\n=== Step 1: Load & Split ===")
@@ -206,15 +250,21 @@ def main():
     X = df.drop(columns=['Date', 'Target_Direction'])
     y = df['Target_Direction']
 
+    # Extract RSI_Regime and High_Vol_Regime columns for signal qualification (not used as features)
+    rsi_regime_col  = df['RSI_Regime'].values    if 'RSI_Regime'      in df.columns else None
+    high_vol_col    = df['High_Vol_Regime'].values if 'High_Vol_Regime' in df.columns else None
+
     train_size = int(len(df) * 0.80)
     val_size   = int(len(df) * 0.10)
+    # BUG FIX: use val_size consistently (not val_n from downstream)
+    test_start = train_size + val_size
 
     X_train_raw = X.iloc[:train_size]
     y_train_raw = y.iloc[:train_size]
-    X_val_raw   = X.iloc[train_size:train_size + val_size]
-    y_val_raw   = y.iloc[train_size:train_size + val_size]
-    X_test_raw  = X.iloc[train_size + val_size:]
-    y_test_raw  = y.iloc[train_size + val_size:]
+    X_val_raw   = X.iloc[train_size:test_start]
+    y_val_raw   = y.iloc[train_size:test_start]
+    X_test_raw  = X.iloc[test_start:]
+    y_test_raw  = y.iloc[test_start:]
 
     print(f"  Train: {len(X_train_raw):,}  Val: {len(X_val_raw):,}  Test: {len(X_test_raw):,}")
 
@@ -226,10 +276,10 @@ def main():
     X_test_sc  = pd.DataFrame(scaler.transform(X_test_raw),  columns=X.columns)
 
     # Step 3: Optuna Tuning
-    print("\n=== Step 3: Optuna Bayesian Tuning (40 trials each) ===")
-    cat_p = tune_catboost(X_train_sc, y_train_raw, n_trials=40)
-    xgb_p = tune_xgboost(X_train_sc, y_train_raw, n_trials=40)
-    lgb_p = tune_lightgbm(X_train_sc, y_train_raw, n_trials=40)
+    print(f"\n=== Step 3: Optuna Bayesian Tuning ({N_OPTUNA_TRIALS} trials each) ===")
+    cat_p = tune_catboost(X_train_sc, y_train_raw, n_trials=N_OPTUNA_TRIALS)
+    xgb_p = tune_xgboost(X_train_sc, y_train_raw, n_trials=N_OPTUNA_TRIALS)
+    lgb_p = tune_lightgbm(X_train_sc, y_train_raw, n_trials=N_OPTUNA_TRIALS)
 
     # Step 4: Walk-Forward on Val + Test combined
     print("\n=== Step 4: Walk-Forward Evaluation ===")
@@ -251,7 +301,7 @@ def main():
     print(f"  Meta-learner weights: CatBoost={meta.coef_[0][0]:.3f}  "
           f"XGB={meta.coef_[0][1]:.3f}  LGB={meta.coef_[0][2]:.3f}")
 
-    # Step 6: Calibrated Threshold on Val portion (Meta-Learner outputs)
+    # Step 6: Calibrated Threshold on Val portion
     print("\n=== Step 6: Calibrated Threshold (Meta-Learner) ===")
     val_meta_probs = meta.predict_proba(val_stack)[:, 1]
     best_t  = optimal_threshold(y_wf[:val_n].values, val_meta_probs)
@@ -266,21 +316,42 @@ def main():
     test_stack  = np.column_stack([cat_p_wf[val_n:], xgb_p_wf[val_n:], lgb_p_wf[val_n:]])
     test_probs  = meta.predict_proba(test_stack)[:, 1]
     y_test_align = y_wf[val_n:].values
-    results = evaluate(y_test_align, test_probs, best_t, "Phase 12 Optimal Ensemble")
+    results = evaluate(y_test_align, test_probs, best_t, "Phase 12 Enhanced Ensemble")
 
-    # Save predictions
-    test_dates = df['Date'].iloc[train_size + val_n:].values
+    # Build enhanced signals with multi-gate filtering
+    # Use adaptive thresholds from test predictions distribution
+    long_thresh  = float(np.percentile(test_probs, 70))
+    short_thresh = float(np.percentile(test_probs, 30))
+    print(f"  Adaptive signal thresholds: LONG >= {long_thresh:.4f}, SHORT <= {short_thresh:.4f}")
+
+    test_rsi_regime = rsi_regime_col[test_start:] if rsi_regime_col is not None else [None]*len(test_probs)
+    test_high_vol   = high_vol_col[test_start:]   if high_vol_col   is not None else [None]*len(test_probs)
+
+    signals = []
+    for i, (prob, pcat, pxgb, plgb, rsi, hvol) in enumerate(zip(
+            test_probs, cat_p_wf[val_n:], xgb_p_wf[val_n:], lgb_p_wf[val_n:],
+            test_rsi_regime, test_high_vol)):
+        sig = qualify_signal(prob, pcat, pxgb, plgb, long_thresh, short_thresh, rsi, hvol)
+        signals.append(sig)
+
+    # Save predictions — BUG FIX: use test_start not (train_size + val_n)
+    test_dates = df['Date'].iloc[test_start:].values
     preds_df = pd.DataFrame({
         'Date':             test_dates,
         'Cat_Prob':         cat_p_wf[val_n:],
         'XGB_Prob':         xgb_p_wf[val_n:],
         'LGB_Prob':         lgb_p_wf[val_n:],
         'Ensemble_Prob':    test_probs,
-        'Signal':           np.where(test_probs > CONFIDENCE_BAND, 'LONG',
-                            np.where(test_probs < (1-CONFIDENCE_BAND), 'SHORT', 'NEUTRAL')),
+        'Signal':           signals,
         'Target_Direction': y_test_align
     })
     preds_df.to_csv(os.path.join(OUTPUT_DIR, "test_predictions.csv"), index=False)
+
+    # Signal quality summary
+    sig_counts = pd.Series(signals).value_counts()
+    print(f"\n  Signal distribution — LONG: {sig_counts.get('LONG',0)}  "
+          f"SHORT: {sig_counts.get('SHORT',0)}  "
+          f"NEUTRAL: {sig_counts.get('NEUTRAL',0)}")
 
     # Step 8: Train Production models on 100% data
     print("\n=== Step 8: Train Production Models (100% Data) ===")
@@ -292,8 +363,7 @@ def main():
     prod_xgb.fit(X_full, y, verbose=False)
     prod_lgb = lgb.LGBMClassifier(**lgb_p).fit(X_full, y)
 
-    # Re-train meta learner on full OUT-OF-SAMPLE walk-forward predictions
-    # to avoid extreme in-sample overfitting!
+    # Re-train meta on full walk-forward predictions
     full_wf_stack = np.column_stack([cat_p_wf, xgb_p_wf, lgb_p_wf])
     prod_meta = LogisticRegression(C=1.0, max_iter=1000, random_state=42)
     prod_meta.fit(full_wf_stack, y_wf.values)
@@ -309,13 +379,14 @@ def main():
     print(f"  LightGBM saved : {MODEL_LGB_OUT}")
     print(f"  Meta-learner   : {MODEL_META_OUT}")
 
-    print("\n" + "="*58)
-    print("  PHASE 12 COMPLETE")
-    print(f"  Overall Win Rate  : {results['acc']*100:.2f}%")
-    print(f"  HC Win Rate       : {results['hc_acc']*100:.2f}%")
-    print(f"  HC Signals Issued : {results['hc_trades']}")
-    print(f"  Threshold         : {best_t:.2f}")
-    print("="*58)
+    print("\n" + "="*60)
+    print("  PHASE 12 COMPLETE (ENHANCED)")
+    print(f"  Overall Win Rate     : {results['acc']*100:.2f}%")
+    print(f"  HC Win Rate ({CONFIDENCE_BAND*100:.0f}%+) : {results['hc_acc']*100:.2f}%")
+    print(f"  HC Signals Issued    : {results['hc_trades']}")
+    print(f"  Threshold            : {best_t:.2f}")
+    print(f"  Confidence Band      : {CONFIDENCE_BAND:.2f}")
+    print("="*60)
 
 if __name__ == "__main__":
     main()

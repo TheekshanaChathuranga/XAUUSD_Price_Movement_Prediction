@@ -47,17 +47,52 @@ GDELT_CHUNK_DAYS = 91    # ~3 months per chunk
 GDELT_MAX_RECORDS = 250  # articles per call (API maximum)
 
 # ── FINANCE KEYWORD FILTER ────────────────────────────────────────────────────
+# Only keep headlines that mention gold-impacting topics
 FINANCE_KEYWORDS = [
-    "gold", "xauusd", "bullion", "precious metal", "spot gold", "gold futures"
+    "gold", "xauusd", "bullion", "precious metal", "spot gold", "gold futures",
+    # War and geopolitical (most reliable gold movers)
+    "war", "conflict", "military", "attack", "invasion", "strike", "missile",
+    "ukraine", "russia", "middle east", "iran", "israel", "nato", "nuclear",
+    "escalat", "sanction", "ceasefire",
+    # Macro triggers
+    "federal reserve", "fomc", "rate hike", "rate cut", "inflation", "cpi",
+    "safe haven", "dollar", "treasury", "recession", "crisis",
 ]
 FINANCE_PATTERN = re.compile("|".join(FINANCE_KEYWORDS), re.IGNORECASE)
 
-# ── GDELT QUERY — finance macro (OR terms in parentheses, required by API) ────
+# ── GDELT QUERY — gold + geopolitical + macro (OR in parentheses) ─────────────
+# Using parentheses around OR groups as required by GDELT 2.0 API
 GDELT_QUERY = (
-    "(gold OR XAUUSD) "
+    "(gold OR XAUUSD OR bullion OR \"safe haven\") "
     "(domain:kitco.com OR domain:fxstreet.com OR domain:reuters.com "
-    "OR domain:bloomberg.com OR domain:cnbc.com)"
+    "OR domain:bloomberg.com OR domain:cnbc.com OR domain:apnews.com "
+    "OR domain:marketwatch.com OR domain:ft.com)"
 )
+
+# ── GOLD CATEGORY CLASSIFICATION ─────────────────────────────────────────────
+GOLD_CATEGORIES = [
+    ("WAR_GEOPOLITICAL", re.compile(
+        r"war|conflict|military|attack|invasion|strike|missile|nuclear|"
+        r"nato|ukraine|russia|iran|israel|middle east|north korea|taiwan|"
+        r"sanction|ceasefire|terrorism|escalat", re.IGNORECASE)),
+    ("FED_POLICY",       re.compile(
+        r"federal reserve|fed rate|fomc|rate hike|rate cut|powell|"
+        r"hawkish|dovish|quantitative|monetary policy", re.IGNORECASE)),
+    ("INFLATION",        re.compile(
+        r"inflation|cpi|pce|stagflat|price index|consumer price", re.IGNORECASE)),
+    ("DOLLAR_FX",        re.compile(
+        r"dollar|dxy|dollar index|currency|devaluat|dedollar", re.IGNORECASE)),
+    ("RECESSION_CRISIS", re.compile(
+        r"recession|crisis|collapse|contagion|bankrupt|default|bail.?out", re.IGNORECASE)),
+    ("GOLD_MARKET",      re.compile(
+        r"gold price|xauusd|spot gold|gold futures|gold etf|gld|bullion", re.IGNORECASE)),
+]
+
+def classify_gold_category(headline: str) -> str:
+    for cat_name, pattern in GOLD_CATEGORIES:
+        if pattern.search(headline):
+            return cat_name
+    return "OTHER_FINANCE"
 
 
 def build_chunks(start: datetime, end: datetime, chunk_days: int = GDELT_CHUNK_DAYS):
@@ -151,11 +186,13 @@ def fetch_chunk(start_dt: datetime, end_dt: datetime) -> list:
                     pass
 
         results.append({
-            "Datetime": dt.strftime("%Y-%m-%d %H:%M:%S") if dt else None,
-            "Date":     dt.strftime("%Y-%m-%d")           if dt else None,
-            "Headline": headline,
-            "Source":   art.get("domain") or "GDELT",
-            "URL":      art.get("url") or "",
+            "Datetime":       dt.strftime("%Y-%m-%d %H:%M:%S") if dt else None,
+            "Date":           dt.strftime("%Y-%m-%d")           if dt else None,
+            "Headline":       headline,
+            "Source":         art.get("domain") or "GDELT",
+            "URL":            art.get("url") or "",
+            "Gold_Category":  classify_gold_category(headline),
+            "Source_Quality": 0.70,  # GDELT aggregated quality
         })
     return results
 

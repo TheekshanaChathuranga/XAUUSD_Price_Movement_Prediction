@@ -1,1 +1,1 @@
-{"threshold": 0.3600000000000001, "confidence_band": 0.6, "ensemble": "catboost+xgboost+lightgbm"}
+{"threshold": 0.5700000000000003, "confidence_band": 0.65, "ensemble": "catboost+xgboost+lightgbm"}

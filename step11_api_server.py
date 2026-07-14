@@ -123,19 +123,49 @@ def sentiment_label(score: float) -> str:
 
 
 # ── IN-MEMORY CACHE ──────────────────────────────────────────────────────────
-_cache_lock   = threading.Lock()
-_signal_cache = {}      # full /api/predict payload
-_news_cache   = []      # list of recent headlines with sentiment
-_last_refresh = None    # datetime of last successful refresh
-_is_refreshing = False  # prevent concurrent refreshes
+_cache_lock          = threading.Lock()
+_signal_cache        = {}      # full /api/predict payload
+_news_cache          = []      # list of recent headlines with sentiment
+_last_refresh        = None    # datetime of last successful refresh
+# BUG FIX: Use threading.Event for atomic refresh guards (thread-safe)
+_refresh_event       = threading.Event()       # set() = refreshing
+_full_refresh_event  = threading.Event()       # set() = full refresh running
+# Keep bool aliases for /api/health backward-compat
+@property
+def _is_refreshing():       return _refresh_event.is_set()
+@property
+def _is_full_refreshing():  return _full_refresh_event.is_set()
 
 # ── HELPERS ──────────────────────────────────────────────────────────────────
 def load_threshold():
     if os.path.exists(THRESHOLD_PATH):
         with open(THRESHOLD_PATH) as f:
             cfg = json.load(f)
-        return cfg.get("threshold", 0.5), cfg.get("confidence_band", 0.60)
-    return 0.5, 0.60
+        return cfg.get("threshold", 0.5), cfg.get("confidence_band", 0.65)
+    return 0.5, 0.65
+
+def load_adaptive_thresholds():
+    """
+    Compute adaptive LONG/SHORT thresholds from the historical Ensemble_Prob
+    distribution. The meta-learner compresses probs into a narrow band
+    (e.g. 0.52–0.66), making hardcoded thresholds like 0.65 unreachable.
+    Using P70/P30 percentiles ensures both LONG and SHORT signals are produced.
+    """
+    PERCENTILE_LONG  = 70
+    PERCENTILE_SHORT = 30
+    preds_path = os.path.join(OUTPUT_DIR, "test_predictions.csv")
+    if os.path.exists(preds_path):
+        try:
+            preds_df = pd.read_csv(preds_path)
+            if 'Ensemble_Prob' in preds_df.columns and len(preds_df) > 20:
+                long_t  = float(np.percentile(preds_df['Ensemble_Prob'], PERCENTILE_LONG))
+                short_t = float(np.percentile(preds_df['Ensemble_Prob'], PERCENTILE_SHORT))
+                return long_t, short_t
+        except Exception:
+            pass
+    # Fallback: use confidence_band from threshold file
+    _, cb = load_threshold()
+    return cb, 1 - cb
 
 def calculate_atr(df, period=14):
     hl  = df['High'] - df['Low']
@@ -254,13 +284,104 @@ _HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept": "application/rss+xml, application/xml, text/xml, */*",
 }
+# ── PRECISION GOLD-IMPACT NEWS FILTER ────────────────────────────────────────
+# Only headlines that directly move gold prices pass this filter.
+# Covers: gold direct, geopolitical/military, US foreign policy,
+#         central bank policy, inflation, dollar/bonds, safe-haven, energy crisis.
 _FINANCE_RE = re.compile(
-    r"gold|xau|federal reserve|fed rate|interest rate|inflation|cpi|ppi|pce|nonfarm|"
-    r"payroll|dollar|crude oil|wti|treasury|yield|precious metal|silver|bullion|"
-    r"rate hike|rate cut|fomc|ecb|bank of england|safe haven|safe-haven|geopolit|"
-    r"spot gold|gold price|gold prices|rate decision|powell|unemployment|macro",
+    # Gold direct
+    r"gold|xau|bullion|precious metal|spot gold|gold price|gold futures|gold etf|gld|"
+    # Geopolitical & military conflict (highest gold impact)
+    r"war|conflict|military|attack|invasion|missile|nuclear|nato|sanction|escalat|"
+    r"ceasefire|coup|terrorism|civil war|airstrike|drone strike|pentagon|"
+    r"us forces|us troops|us military|us army|us navy|us air force|warfare|arms deal|"
+    r"us strike|american troops|defense secretary|joint chiefs|"
+    # Key conflict zones that historically drive gold safe-haven bids
+    r"iran|israel|russia|ukraine|middle east|north korea|taiwan|china tension|"
+    r"hamas|hezbollah|houthi|red sea|strait of hormuz|"
+    # US foreign policy & dollar weaponization
+    r"us sanction|trade war|tariff|embargo|dollar dominance|dedollar|"
+    r"us debt|debt ceiling|us deficit|treasury default|"
+    # Central bank policy (high impact on gold via real rates)
+    r"federal reserve|fed rate|fomc|rate hike|rate cut|powell|hawkish|dovish|"
+    r"ecb|bank of england|boe|monetary policy|quantitative|taper|fed funds|"
+    r"interest rate decision|central bank|"
+    # Inflation data (key gold driver)
+    r"inflation|cpi|pce|ppi|stagflat|price index|consumer price|producer price|"
+    # US Dollar & bonds (gold inverse correlation)
+    r"dollar|dxy|dollar index|dollar weakness|dollar strength|treasury|yield|"
+    r"real yield|tips|bond yield|10.year|"
+    # Crisis & safe-haven flows
+    r"safe haven|safe-haven|flight to safety|risk off|crisis|panic|collapse|"
+    r"contagion|bail.?out|bank run|financial crisis|recession|default|"
+    # Energy crisis (inflation proxy, gold-correlated)
+    r"crude oil|wti|brent|opec|oil price|oil shock|energy crisis",
     re.IGNORECASE
 )
+
+# Noise exclusion — headlines that pass _FINANCE_RE but are NOT gold-relevant
+_NOISE_RE = re.compile(
+    r"(earnings|quarterly results|stock split|ipo|merger|acquisition|"
+    r"lawsuit|recall|product launch|retail sales|consumer confidence|"
+    r"housing starts|pmi survey|manufacturing index|car sales|auto sales|"
+    r"sports|nfl|nba|cricket|celebrity|entertainment|weather|hurricane|tornado)",
+    re.IGNORECASE
+)
+_DIRECT_GOLD_RE = re.compile(r"gold|xau|bullion|spot gold", re.IGNORECASE)
+
+def _is_gold_relevant(headline: str) -> bool:
+    """True if headline passes gold-impact filter and is not pure noise."""
+    if not _FINANCE_RE.search(headline):
+        return False
+    # Allow through if headline directly mentions gold even if noise-pattern matches
+    if _NOISE_RE.search(headline) and not _DIRECT_GOLD_RE.search(headline):
+        return False
+    return True
+
+# ── GOLD CATEGORY CLASSIFIER ──────────────────────────────────────────────────
+_GOLD_CATEGORIES = [
+    ("WAR_MILITARY",  re.compile(
+        r"war|conflict|military|attack|invasion|missile|nuclear|nato|sanction|"
+        r"ceasefire|terrorism|coup|escalat|airstrike|drone strike|pentagon|"
+        r"us forces|us troops|iran|israel|russia|ukraine|middle east|north korea|"
+        r"taiwan|hamas|hezbollah|houthi|red sea|warfare|arms deal", re.IGNORECASE)),
+    ("FED_POLICY",    re.compile(
+        r"federal reserve|fed rate|fomc|rate hike|rate cut|powell|"
+        r"hawkish|dovish|quantitative|taper|monetary policy|fed funds|"
+        r"interest rate decision|ecb|bank of england|central bank", re.IGNORECASE)),
+    ("INFLATION",     re.compile(
+        r"inflation|cpi|pce|ppi|stagflat|price index|consumer price|producer price", re.IGNORECASE)),
+    ("DOLLAR_FX",     re.compile(
+        r"dollar|dxy|dollar index|dollar weakness|dollar strength|dedollar|treasury|"
+        r"yield|bond yield|10.year|tips|real yield", re.IGNORECASE)),
+    ("CRISIS",        re.compile(
+        r"recession|crisis|panic|collapse|contagion|bail.?out|bank run|"
+        r"financial crisis|market crash|default|safe haven|flight to safety|risk off", re.IGNORECASE)),
+    ("ENERGY",        re.compile(
+        r"crude oil|wti|brent|opec|oil price|oil shock|energy crisis", re.IGNORECASE)),
+    ("GOLD_MARKET",   re.compile(
+        r"gold price|xauusd|spot gold|gold futures|gold etf|gld|bullion|"
+        r"precious metal|gold demand|gold supply|gold reserve|central bank gold", re.IGNORECASE)),
+]
+
+_CATEGORY_ICONS = {
+    "WAR_MILITARY": "🪖",
+    "FED_POLICY":   "🏦",
+    "INFLATION":    "📈",
+    "DOLLAR_FX":    "💵",
+    "CRISIS":       "🚨",
+    "ENERGY":       "🛢️",
+    "GOLD_MARKET":  "🥇",
+    "OTHER":        "📰",
+}
+
+def classify_news_category(headline: str) -> str:
+    """Return gold-impact category for a headline (first match wins)."""
+    for cat, pattern in _GOLD_CATEGORIES:
+        if pattern.search(headline):
+            return cat
+    return "OTHER"
+
 _DATE_FMTS = [
     "%a, %d %b %Y %H:%M:%S %z",
     "%a, %d %b %Y %H:%M:%S",
@@ -278,24 +399,47 @@ def _parse_rss_date(s: str):
     try: return datetime.strptime(clean[:25], "%a, %d %b %Y %H:%M:%S")
     except: return None
 
+# ── GOLD-IMPACT TARGETED GOOGLE NEWS QUERIES ──────────────────────────────────
 GNEWS_QUERIES = [
-    "gold bullion commodity market",
-    "gold inflation hedge dollar",
-    "federal reserve interest rate FOMC",
-    "inflation CPI economy",
-    "crude oil OPEC energy market",
+    # Gold market direct
+    "spot gold price bullion",
+    "gold ETF GLD central bank buying reserves",
+    # Fed / central bank
+    "federal reserve interest rate FOMC decision",
+    "ECB Bank of England rate decision gold",
+    # Inflation
+    "CPI inflation data PCE expectations gold",
+    # Dollar
+    "dollar DXY weakness strength gold",
+    "dedollarization US dollar gold reserves",
+    # Geopolitical / military (highest gold impact)
+    "US military strike airstrike gold safe haven",
+    "geopolitical tension conflict gold price",
+    "Iran Israel Russia Ukraine war gold",
+    "US sanctions trade war dollar gold",
+    "Pentagon US forces Middle East gold",
+    # Crisis
+    "financial crisis recession gold safe haven",
+    # Energy
+    "crude oil OPEC energy crisis gold inflation",
 ]
 
+# ── RSS SOURCES — GOLD-IMPACT FOCUSED ────────────────────────────────────────
 RSS_LIVE = [
-    ("https://finance.yahoo.com/rss/headline?s=GC=F",         "Yahoo Finance"),
-    ("https://www.kitco.com/feed/news.rss",                    "Kitco News"),
-    ("https://www.mining.com/commodity/gold/feed/",            "Mining.com"),
-    ("https://www.goldbroker.com/news.rss",                    "GoldBroker"),
-    ("https://www.bullionvault.com/gold-news/feed",            "BullionVault"),
-    ("https://www.forexlive.com/feed/news",                    "ForexLive"),
-    ("https://www.fxstreet.com/rss/news",                      "FXStreet"),
-    ("https://www.cnbc.com/id/20910258/device/rss/rss.html",   "CNBC"),
+    # Gold-specialist sources
+    ("https://finance.yahoo.com/rss/headline?s=GC=F",               "Yahoo Finance"),
+    ("https://www.kitco.com/feed/news.rss",                          "Kitco News"),
+    ("https://www.goldbroker.com/news.rss",                          "GoldBroker"),
+    ("https://www.bullionvault.com/gold-news/feed",                  "BullionVault"),
+    # Macro / FX sources
+    ("https://www.forexlive.com/feed/news",                          "ForexLive"),
+    ("https://www.fxstreet.com/rss/news",                            "FXStreet"),
+    ("https://www.cnbc.com/id/20910258/device/rss/rss.html",         "CNBC"),
     ("https://feeds.marketwatch.com/marketwatch/realtimeheadlines/", "MarketWatch"),
+    # Geopolitical / war / US military — critical gold movers
+    ("https://feeds.reuters.com/Reuters/worldNews",                  "Reuters"),
+    ("https://feeds.reuters.com/reuters/topNews",                    "Reuters"),
+    ("https://www.aljazeera.com/xml/rss/all.xml",                    "Al Jazeera"),
 ]
 
 def _fetch_rss(url: str, source: str) -> list:
@@ -312,7 +456,7 @@ def _fetch_rss(url: str, source: str) -> list:
         t = item.find("title")
         if not t: continue
         title = t.get_text(strip=True)
-        if not _FINANCE_RE.search(title): continue
+        if not _is_gold_relevant(title): continue  # precision gold-impact filter
         pub = item.find("pubDate") or item.find("published")
         dt  = _parse_rss_date(pub.get_text(strip=True) if pub else "")
         if dt and dt < cutoff: continue
@@ -345,7 +489,7 @@ def _fetch_gnews(query: str) -> list:
         if not t: continue
         title = t.get_text(strip=True)
         if " - " in title: title = title.rsplit(" - ", 1)[0].strip()
-        if not _FINANCE_RE.search(title): continue
+        if not _is_gold_relevant(title): continue  # precision gold-impact filter
         pub = item.find("pubDate")
         dt  = _parse_rss_date(pub.get_text(strip=True) if pub else "")
         if dt and dt < cutoff: continue
@@ -412,14 +556,18 @@ def fetch_live_gold_price() -> float:
     try:
         import yfinance as yf
         ticker = yf.Ticker("GC=F")
-        # Try fast info first
-        price = float(ticker.fast_info.get('last_price', 0))
+        price = 0.0
+        try:
+            fi = ticker.fast_info
+            price = float(getattr(fi, 'last_price', None) or
+                          getattr(fi, 'lastPrice',  None) or 0)
+        except Exception:
+            pass
         if price > 0:
             return price
-        # Fallback to history
-        df = ticker.history(period="1d")
-        if not df.empty:
-            return float(df['Close'].iloc[-1])
+        hist = ticker.history(period="1d")
+        if not hist.empty:
+            return float(hist['Close'].iloc[-1])
     except Exception as e:
         print(f"[live_price] yfinance error: {e}", flush=True)
     try:
@@ -433,6 +581,8 @@ def compute_signal_with_live_sentiment(live_news: list) -> dict:
     """
     Re-run the ensemble with sentiment features and technical indicators
     updated by real-time gold price action and live news.
+
+    NEW: Dual-Timeframe Signals (Scalp + Swing) + Confidence Tiers + Smart Timing
     """
     try:
         inf_df = pd.read_csv(INFERENCE_DATA)
@@ -472,7 +622,6 @@ def compute_signal_with_live_sentiment(live_news: list) -> dict:
         # Real-time price features adjustment
         if entry_price > 0 and latest_close > 0:
             if "Close_Return" in features:
-                # Update Close_Return to reflect return from yesterday's close to current live price
                 X_blended["Close_Return"] = float(np.log(entry_price / latest_close))
             
             # Recompute ratios using the live price
@@ -482,7 +631,26 @@ def compute_signal_with_live_sentiment(live_news: list) -> dict:
                     X_blended[ratio_feat] = float(X_blended[ratio_feat].iloc[0]) * ratio_adjust
 
         scaler = joblib.load(SCALER_PATH)
-        X_sc   = pd.DataFrame(scaler.transform(X_blended), columns=features)
+
+        # ── FEATURE ALIGNMENT ─────────────────────────────────────────────────
+        if hasattr(scaler, 'feature_names_in_'):
+            expected_features = list(scaler.feature_names_in_)
+            current_features  = list(X_blended.columns)
+            extra   = [f for f in current_features  if f not in expected_features]
+            missing = [f for f in expected_features if f not in current_features]
+            if extra or missing:
+                print(f"  [ALIGN] Dropping {len(extra)} unseen features: {extra[:5]}...", flush=True)
+                print(f"  [ALIGN] Zero-filling {len(missing)} missing features: {missing[:5]}...", flush=True)
+                # Drop unknown columns
+                X_blended = X_blended.drop(columns=[c for c in extra if c in X_blended.columns], errors='ignore')
+                # Add missing columns filled with zero (neutral/safe default)
+                for col in missing:
+                    X_blended[col] = 0.0
+                # Reorder to exactly match scaler's column order
+                X_blended = X_blended[expected_features]
+
+        X_sc   = pd.DataFrame(scaler.transform(X_blended),
+                              columns=list(X_blended.columns))
 
         m_cat = CatBoostClassifier(); m_cat.load_model(MODEL_CAT)
         m_xgb = xgb.XGBClassifier();  m_xgb.load_model(MODEL_XGB)
@@ -494,10 +662,62 @@ def compute_signal_with_live_sentiment(live_news: list) -> dict:
         p_lgb = float(m_lgb.predict(X_sc.values)[0])
         prob_up = float(meta.predict_proba(np.array([[p_cat, p_xgb, p_lgb]]))[0, 1])
 
-        threshold, confidence_band = load_threshold()
-        if prob_up >= confidence_band:   signal = "LONG"
-        elif prob_up <= (1 - confidence_band): signal = "SHORT"
-        else:                             signal = "NEUTRAL"
+        # ── DUAL-TIMEFRAME SIGNAL COMPUTATION ────────────────────────────────
+        # Gates 3/4/5 REMOVED — RSI/blackout/vol-regime killed most signals.
+        # Gate 1: Separate percentile thresholds per timeframe.
+        # Gate 2: Ensemble consensus kept — demotes strength to WEAK not NEUTRAL.
+        # Weak fallback: always produce a directional lean (LONG or SHORT), never flat.
+        #
+        # SCALP : P65/P35 — more frequent signals, 0.4×/0.8× ATR SL/TP
+        # SWING : P75/P25 — higher confidence only, 1.5×/3.0× ATR SL/TP
+
+        models_bullish = sum(1 for p in [p_cat, p_xgb, p_lgb] if p > 0.50)
+        models_bearish = sum(1 for p in [p_cat, p_xgb, p_lgb] if p < 0.50)
+
+        # Load per-timeframe thresholds from historical probability distribution
+        preds_path = os.path.join(OUTPUT_DIR, "test_predictions.csv")
+        scalp_lt = scalp_st = swing_lt = swing_st = None
+        if os.path.exists(preds_path):
+            try:
+                _pdf = pd.read_csv(preds_path)
+                if 'Ensemble_Prob' in _pdf.columns and len(_pdf) > 20:
+                    _p = _pdf['Ensemble_Prob']
+                    scalp_lt = float(np.percentile(_p, 65))
+                    scalp_st = float(np.percentile(_p, 35))
+                    swing_lt = float(np.percentile(_p, 75))
+                    swing_st = float(np.percentile(_p, 25))
+            except Exception:
+                pass
+        if scalp_lt is None:
+            _, cb = load_threshold()
+            scalp_lt = cb;        scalp_st = 1 - cb
+            swing_lt = cb + 0.03; swing_st = 1 - cb - 0.03
+
+        def _resolve_signal(p_up, long_t, short_t, m_bull, m_bear):
+            """Gate 1 + Gate 2 + weak fallback. Always returns (signal, strength)."""
+            if p_up >= long_t:
+                sig = "LONG"
+                strength = "STRONG" if p_up >= long_t + (1 - long_t) * 0.5 else "MODERATE"
+            elif p_up <= short_t:
+                sig = "SHORT"
+                strength = "STRONG" if p_up <= short_t * 0.5 else "MODERATE"
+            else:
+                # Directional lean — always emit a signal, just mark it WEAK
+                sig = "LONG" if p_up >= 0.50 else "SHORT"
+                strength = "WEAK"
+            # Gate 2: consensus check — downgrade strength if models disagree
+            if sig == "LONG" and m_bull < 2:  strength = "WEAK"
+            elif sig == "SHORT" and m_bear < 2: strength = "WEAK"
+            return sig, strength
+
+        scalp_sig, scalp_strength = _resolve_signal(
+            prob_up, scalp_lt, scalp_st, models_bullish, models_bearish)
+        swing_sig, swing_strength = _resolve_signal(
+            prob_up, swing_lt, swing_st, models_bullish, models_bearish)
+
+        # Primary signal for SHAP narrative = swing (higher confidence gate)
+        signal = swing_sig
+        print(f"  Scalp={scalp_sig}({scalp_strength})  Swing={swing_sig}({swing_strength})  prob={prob_up:.4f}", flush=True)
 
         # SHAP
         explainer   = shap.TreeExplainer(m_cat)
@@ -517,14 +737,17 @@ def compute_signal_with_live_sentiment(live_news: list) -> dict:
                 "impact":    float(impact),
             })
 
-        if signal == "LONG":
-            sl = entry_price - 0.4 * latest_atr
-            tp = entry_price + 0.8 * latest_atr
-        elif signal == "SHORT":
-            sl = entry_price + 0.4 * latest_atr
-            tp = entry_price - 0.8 * latest_atr
-        else:
-            sl = tp = 0.0
+        # ── Per-timeframe SL/TP ──────────────────────────────────────────────
+        def _calc_levels(sig, ep, atr, scalp=True):
+            sl_m = 0.4 if scalp else 1.5
+            tp_m = 0.8 if scalp else 3.0
+            if sig == "LONG":  return round(ep - sl_m*atr, 2), round(ep + tp_m*atr, 2)
+            if sig == "SHORT": return round(ep + sl_m*atr, 2), round(ep - tp_m*atr, 2)
+            return 0.0, 0.0
+
+        scalp_sl, scalp_tp = _calc_levels(scalp_sig, entry_price, latest_atr, scalp=True)
+        swing_sl, swing_tp = _calc_levels(swing_sig, entry_price, latest_atr, scalp=False)
+        sl = scalp_sl; tp = scalp_tp
 
         pp = (latest_high + latest_low + entry_price) / 3
         r1 = 2*pp - latest_low;  r2 = pp + (latest_high - latest_low)
@@ -534,7 +757,7 @@ def compute_signal_with_live_sentiment(live_news: list) -> dict:
                                        entry_price, sl, tp, latest_atr)
         inf_date_str, days_old, is_stale = _data_staleness()
 
-        # Compute next business day for the target date
+        # Next business day target date
         try:
             dt = datetime.strptime(str(inference_date), "%Y-%m-%d")
             next_dt = dt + timedelta(days=1)
@@ -554,16 +777,38 @@ def compute_signal_with_live_sentiment(live_news: list) -> dict:
             "live_vader_sentiment": round(live_vader_mean, 4),
             "live_vader_label":     sentiment_label(live_vader_mean),
             "model_votes":  {"catboost": round(p_cat,4), "xgboost": round(p_xgb,4), "lightgbm": round(p_lgb,4)},
-            "prediction":   {"signal": signal, "probability_up": prob_up, "probability_down": 1-prob_up},
+            "consensus_ok": models_bullish >= 2 or models_bearish >= 2,
+            # ── Dual-timeframe signal objects ────────────────────────────────
+            "scalp": {
+                "signal":      scalp_sig,
+                "strength":    scalp_strength,
+                "stop_loss":   scalp_sl,
+                "take_profit": scalp_tp,
+                "atr_mult":    "0.4×SL / 0.8×TP",
+            },
+            "swing": {
+                "signal":      swing_sig,
+                "strength":    swing_strength,
+                "stop_loss":   swing_sl,
+                "take_profit": swing_tp,
+                "atr_mult":    "1.5×SL / 3.0×TP",
+            },
+            "prediction":   {"signal": signal, "probability_up": round(prob_up,4), "probability_down": round(1-prob_up,4)},
             "narrative":    narrative,
             "risk_management": {
-                "entry_price": entry_price,
-                "latest_close": latest_close,
-                "stop_loss":   sl,
-                "take_profit": tp,
-                "atr_14":      latest_atr,
+                "entry_price":   round(entry_price, 2),
+                "latest_close":  round(latest_close, 2),
+                "stop_loss":     round(scalp_sl, 2),
+                "take_profit":   round(scalp_tp, 2),
+                "stop_loss_sw":  round(swing_sl, 2),
+                "take_profit_sw":round(swing_tp, 2),
+                "atr_14":        round(latest_atr, 2),
+                "note": "Scalp: 0.4×/0.8× ATR. Swing: 1.5×/3.0× ATR (1:2 R:R)."
             },
-            "intraday_levels": {"r2": r2, "r1": r1, "pp": pp, "s1": s1, "s2": s2},
+            "intraday_levels": {
+                "r2": round(r2,2), "r1": round(r1,2), "pp": round(pp,2),
+                "s1": round(s1,2), "s2": round(s2,2)
+            },
             "shap_drivers": top_drivers,
         }
     except Exception as e:
@@ -571,15 +816,18 @@ def compute_signal_with_live_sentiment(live_news: list) -> dict:
         return {"status": "error", "message": str(e), "trace": traceback.format_exc()}
 
 def build_news_cache(live_news: list) -> list:
-    """Build rich news list with VADER sentiment for /api/live-news endpoint."""
+    """Build rich news list with VADER sentiment + gold-impact category tags."""
     result = []
     seen   = set()
-    for item in (live_news or [])[:40]:
+    for item in (live_news or [])[:60]:
         h = item.get("Headline", "")
         if not h or h.lower() in seen: continue
+        if not _is_gold_relevant(h): continue  # drop non-gold headlines
         seen.add(h.lower())
-        score  = vader_score(h)
-        label  = sentiment_label(score)
+        score    = vader_score(h)
+        label    = sentiment_label(score)
+        category = classify_news_category(h)
+        if category == "OTHER" and score == 0.0: continue  # pure noise
         result.append({
             "headline":  h,
             "source":    item.get("Source", ""),
@@ -587,16 +835,19 @@ def build_news_cache(live_news: list) -> list:
             "datetime":  item.get("Datetime", ""),
             "sentiment": label,
             "score":     round(score, 3),
+            "category":  category,
+            "cat_icon":  _CATEGORY_ICONS.get(category, "📰"),
         })
-    return result[:20]
+    return result[:25]
 
 # ── BACKGROUND REFRESH JOB ────────────────────────────────────────────────────
 def background_refresh():
     """Runs every 15 minutes. Fetches news, updates sentiment, rebuilds signal cache."""
-    global _signal_cache, _news_cache, _last_refresh, _is_refreshing
-    if _is_refreshing:
+    global _signal_cache, _news_cache, _last_refresh
+    # BUG FIX: Use threading.Event for atomic test-and-set
+    if _refresh_event.is_set():
         return
-    _is_refreshing = True
+    _refresh_event.set()
     print(f"[{datetime.now().strftime('%H:%M:%S')}] Background refresh started...", flush=True)
     try:
         live_news = fetch_live_news()
@@ -611,10 +862,14 @@ def background_refresh():
             stored_news = []
             try:
                 ndf = pd.read_csv(GDELT_NEWS)
-                for _, row in ndf.head(20).iterrows():
+                seen_h = {x['headline'].lower() for x in news_data}
+                for _, row in ndf.head(50).iterrows():
                     h = str(row.get('Headline',''))
-                    if not h or h in [x['headline'] for x in news_data]: continue
-                    score = vader_score(h)
+                    if not h or h.lower() in seen_h: continue
+                    if not _is_gold_relevant(h): continue  # gold-impact filter
+                    score    = vader_score(h)
+                    category = classify_news_category(h)
+                    if category == "OTHER" and score == 0.0: continue
                     stored_news.append({
                         "headline":  h,
                         "source":    str(row.get('Source','')),
@@ -622,6 +877,8 @@ def background_refresh():
                         "datetime":  str(row.get('Datetime','')),
                         "sentiment": sentiment_label(score),
                         "score":     round(score, 3),
+                        "category":  category,
+                        "cat_icon":  _CATEGORY_ICONS.get(category, "📰"),
                     })
             except Exception: pass
 
@@ -643,14 +900,37 @@ def background_refresh():
         print(f"  [ERR] background_refresh: {e}", flush=True)
         traceback.print_exc()
     finally:
-        _is_refreshing = False
+        _refresh_event.clear()
+
+def run_full_daily_refresh_task():
+    global _signal_cache, _news_cache, _last_refresh
+    if _full_refresh_event.is_set():
+        return
+    _full_refresh_event.set()
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Full daily refresh started...", flush=True)
+    try:
+        proc = subprocess.run(
+            [sys.executable, REFRESH_SCRIPT],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            encoding="utf-8", errors="replace"
+        )
+        if proc.returncode == 0:
+            print("Full daily refresh succeeded. Recomputing signals...", flush=True)
+            background_refresh()
+        else:
+            print(f"Full daily refresh failed:\\n{proc.stdout[-3000:]}", flush=True)
+    except Exception as e:
+        print(f"Full daily refresh error: {e}", flush=True)
+    finally:
+        _full_refresh_event.clear()
 
 # ── SCHEDULER ─────────────────────────────────────────────────────────────────
 scheduler = BackgroundScheduler()
 scheduler.add_job(background_refresh, "interval", minutes=15, id="live_refresh",
                   next_run_time=datetime.now())   # run immediately on startup
+scheduler.add_job(run_full_daily_refresh_task, "cron", hour=0, minute=5, id="daily_refresh")
 scheduler.start()
-print("Scheduler started — news refresh every 15 minutes.", flush=True)
+print("Scheduler started — news refresh every 15 minutes, full refresh daily at 00:05 UTC.", flush=True)
 
 # ── ENDPOINTS ─────────────────────────────────────────────────────────────────
 @app.get("/api/predict")
@@ -716,18 +996,103 @@ def macro_calendar():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.get("/api/history")
+def get_history():
+    """Returns historical signals split into SCALP and SWING timeframes.
+    SCALP: P65/P35 thresholds, 0.4×/0.8× ATR SL/TP.
+    SWING: P75/P25 thresholds, 1.5×/3.0× ATR SL/TP.
+    Always produces a directional signal with strength tier (STRONG/MODERATE/WEAK).
+    """
+    hist_file = os.path.join(OUTPUT_DIR, "test_predictions.csv")
+    if not os.path.exists(hist_file):
+        return {"status": "error", "message": "History file not found."}
+    try:
+        df = pd.read_csv(hist_file)
+        df['Date'] = pd.to_datetime(df['Date'])
+        model_cols = ['Cat_Prob', 'XGB_Prob', 'LGB_Prob']
+        has_models = all(c in df.columns for c in model_cols)
+
+        # Compute per-timeframe adaptive thresholds from full dataset
+        probs    = df['Ensemble_Prob'].dropna()
+        scalp_lt = float(np.percentile(probs, 65))
+        scalp_st = float(np.percentile(probs, 35))
+        swing_lt = float(np.percentile(probs, 75))
+        swing_st = float(np.percentile(probs, 25))
+
+        # Get latest ATR for SL/TP estimates
+        latest_atr = 30.0
+        try:
+            rpdf = pd.read_csv(RAW_PRICES)
+            rpdf['ATR'] = calculate_atr(rpdf, 14)
+            latest_atr = float(rpdf['ATR'].dropna().iloc[-1])
+            latest_close = float(rpdf['Close'].iloc[-1])
+        except Exception:
+            latest_close = 3300.0
+
+        df = df.sort_values("Date", ascending=False).head(120)
+
+        def _hist_signal(prob, long_t, short_t, m_bull, m_bear):
+            if prob >= long_t:
+                sig = "LONG"; strength = "STRONG" if prob >= long_t + (1-long_t)*0.5 else "MODERATE"
+            elif prob <= short_t:
+                sig = "SHORT"; strength = "STRONG" if prob <= short_t*0.5 else "MODERATE"
+            else:
+                sig = "LONG" if prob >= 0.50 else "SHORT"; strength = "WEAK"
+            if sig == "LONG"  and m_bull < 2: strength = "WEAK"
+            elif sig == "SHORT" and m_bear < 2: strength = "WEAK"
+            return sig, strength
+
+        scalp_list, swing_list = [], []
+
+        for _, row in df.iterrows():
+            prob   = float(row.get("Ensemble_Prob", 0.5))
+            target = row.get("Target_Direction")
+            ds     = row["Date"].strftime("%Y-%m-%d")
+            m_bull = sum(1 for c in model_cols if float(row.get(c, 0.5)) > 0.50) if has_models else 1
+            m_bear = sum(1 for c in model_cols if float(row.get(c, 0.5)) < 0.50) if has_models else 1
+
+            sc_sig, sc_str = _hist_signal(prob, scalp_lt, scalp_st, m_bull, m_bear)
+            sw_sig, sw_str = _hist_signal(prob, swing_lt, swing_st, m_bull, m_bear)
+
+            if sc_sig == "LONG":  sc_sl = round(latest_close - 0.4*latest_atr, 2); sc_tp = round(latest_close + 0.8*latest_atr, 2)
+            else:                  sc_sl = round(latest_close + 0.4*latest_atr, 2); sc_tp = round(latest_close - 0.8*latest_atr, 2)
+            if sw_sig == "LONG":  sw_sl = round(latest_close - 1.5*latest_atr, 2); sw_tp = round(latest_close + 3.0*latest_atr, 2)
+            else:                  sw_sl = round(latest_close + 1.5*latest_atr, 2); sw_tp = round(latest_close - 3.0*latest_atr, 2)
+
+            sc_res = "WIN" if (sc_sig=="LONG" and target==1) or (sc_sig=="SHORT" and target==0) else "LOSS"
+            sw_res = "WIN" if (sw_sig=="LONG" and target==1) or (sw_sig=="SHORT" and target==0) else "LOSS"
+
+            scalp_list.append({"date":ds,"signal":sc_sig,"strength":sc_str,
+                                "probability":round(prob*100,1),"stop_loss":sc_sl,"take_profit":sc_tp,"result":sc_res})
+            swing_list.append({"date":ds,"signal":sw_sig,"strength":sw_str,
+                                "probability":round(prob*100,1),"stop_loss":sw_sl,"take_profit":sw_tp,"result":sw_res})
+
+        return {
+            "status": "success",
+            "scalp":  scalp_list,
+            "swing":  swing_list,
+            "thresholds": {
+                "scalp": {"long": round(scalp_lt,4), "short": round(scalp_st,4)},
+                "swing": {"long": round(swing_lt,4), "short": round(swing_st,4)},
+            }
+        }
+    except Exception as e:
+        import traceback
+        return {"status": "error", "message": str(e), "trace": traceback.format_exc()}
+
 @app.get("/api/health")
 def health():
     inf_date, days_old, is_stale = _data_staleness()
     last_upd = _last_refresh.strftime("%Y-%m-%d %H:%M UTC") if _last_refresh else "never"
     return {
-        "status":         "ok",
-        "inference_date": inf_date,
-        "data_age_days":  days_old,
-        "is_stale":       is_stale,
-        "today":          str(date.today()),
-        "last_refresh":   last_upd,
-        "refreshing":     _is_refreshing,
+        "status":           "ok",
+        "inference_date":   inf_date,
+        "data_age_days":    days_old,
+        "is_stale":         is_stale,
+        "today":            str(date.today()),
+        "last_refresh":     last_upd,
+        "refreshing":       _refresh_event.is_set(),
+        "refreshing_daily": _full_refresh_event.is_set(),
     }
 
 @app.post("/api/refresh")
@@ -735,23 +1100,10 @@ def manual_refresh():
     """Trigger the daily_refresh.py pipeline to pull today's full data."""
     if not os.path.exists(REFRESH_SCRIPT):
         return {"status": "error", "message": "daily_refresh.py not found"}
-    try:
-        proc = subprocess.Popen(
-            [sys.executable, REFRESH_SCRIPT],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            encoding="utf-8", errors="replace"
-        )
-        out, _ = proc.communicate(timeout=600)
-        if proc.returncode == 0:
-            # Trigger a signal recompute after fresh data
-            background_refresh()
-            return {"status": "success", "log": out[-3000:]}
-        else:
-            return {"status": "error", "log": out[-3000:]}
-    except subprocess.TimeoutExpired:
-        return {"status": "error", "message": "Refresh timed out (>10 min)"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    if _full_refresh_event.is_set():
+        return {"status": "refresh_started", "message": "Refresh is already in progress."}
+    threading.Thread(target=run_full_daily_refresh_task, daemon=True).start()
+    return {"status": "refresh_started", "message": "Background refresh started. Check back in a few minutes."}
 
 if __name__ == "__main__":
     print("Starting Gold AI API Server v3 on http://localhost:8000")
