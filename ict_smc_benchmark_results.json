@@ -1,0 +1,30 @@
+[
+  {
+    "Strategy": "1. Standard Baseline (Market Entry + Fixed ATR SL)",
+    "Total_Trades": 2410,
+    "Wins": 1179,
+    "Losses": 1231,
+    "Break_Even_Saves": 0,
+    "Win_Rate_Effective": 48.9,
+    "Win_Rate_Nominal": 48.9,
+    "Profit_Factor": 1.88,
+    "Total_PnL_USD": 30471.28,
+    "Avg_Trade_PnL": 12.64,
+    "Sharpe_Ratio": 3.53,
+    "Max_Drawdown_USD": 2485.48
+  },
+  {
+    "Strategy": "2. Smart Money Concepts (ICT: FVG + OTE + Structural SL + BE)",
+    "Total_Trades": 539,
+    "Wins": 275,
+    "Losses": 186,
+    "Break_Even_Saves": 78,
+    "Win_Rate_Effective": 59.7,
+    "Win_Rate_Nominal": 51.0,
+    "Profit_Factor": 2.48,
+    "Total_PnL_USD": 7072.99,
+    "Avg_Trade_PnL": 13.12,
+    "Sharpe_Ratio": 4.85,
+    "Max_Drawdown_USD": 652.62
+  }
+]

@@ -39,6 +39,16 @@ FRED_SERIES = {
     "M2_Money_Supply" : ("M2SL",      "M2 Money Stock (Billions USD, SA)"),
 }
 
+# ─── WIN-RATE UPGRADE: VIX AND EXTENDED WTI LAGS (Chai et al. SVAR) ───────────
+# Chai et al. impulse-response analysis on gold returns:
+#   WTI Crude Oil ≈89% of gold forecast error variance — dominant driver
+#   VIX grows from ~4% → ~7.5% contribution over the forecast horizon
+#   DXY only ~0.5% — small, absorbed within 5 trading days
+# Both WTI and VIX are fetched via Yahoo Finance (FRED has limited VIX history).
+PRIORITY_YAHOO_SERIES = {
+    "VIX_Index"   : ("^VIX",      "CBOE Volatility Index (fear gauge)"),
+}
+
 # ─── FRED API HELPER ─────────────────────────────────────────────────────────
 FRED_BASE = "https://api.stlouisfed.org/fred/series/observations"
 
@@ -73,23 +83,29 @@ def fetch_fred_series(series_id: str, name: str, start: str, end: str) -> pd.Ser
           f"({s.index.min().date()} → {s.index.max().date()})")
     return s
 
-# ─── DXY FALLBACK (Yahoo Finance) ────────────────────────────────────────────
-def fetch_dxy_yahoo(start: str, end: str) -> pd.Series:
-    """DXY is not on FRED; pull from Yahoo Finance as fallback."""
+# ─── DXY + VIX FALLBACK (Yahoo Finance) ───────────────────────────────────────
+def fetch_yahoo(ticker: str, name: str, start: str, end: str) -> pd.Series:
+    """Fetch a closing-price series from Yahoo Finance."""
     try:
         import yfinance as yf
-        raw = yf.download("DX-Y.NYB", start=start, end=end,
+        raw = yf.download(ticker, start=start, end=end,
                           auto_adjust=True, progress=False)
         if isinstance(raw.columns, pd.MultiIndex):
             raw.columns = raw.columns.get_level_values(0)
-        s = raw["Close"].rename("DXY_Index")
+        s = raw["Close"].rename(name)
         s.index = pd.to_datetime(s.index).normalize()
         s.index.name = "Date"
-        print(f"  [DX-Y.NYB] DXY_Index (Yahoo): {len(s)} observations")
+        print(f"  [{ticker}] {name} (Yahoo): {len(s)} observations  "
+              f"({s.index.min().date()} → {s.index.max().date()})")
         return s
     except Exception as e:
-        print(f"  [WARN] DXY via Yahoo failed: {e}")
-        return pd.Series(name="DXY_Index", dtype=float)
+        print(f"  [WARN] {name} via Yahoo ({ticker}) failed: {e}")
+        return pd.Series(name=name, dtype=float)
+
+
+def fetch_dxy_yahoo(start: str, end: str) -> pd.Series:
+    """DXY is not on FRED; pull from Yahoo Finance as fallback."""
+    return fetch_yahoo("DX-Y.NYB", "DXY_Index", start, end)
 
 # ─── MERGE STRATEGY ──────────────────────────────────────────────────────────
 def merge_to_daily(series_dict: dict, start: str, end: str) -> pd.DataFrame:
@@ -139,6 +155,16 @@ if __name__ == "__main__":
 
     # DXY via Yahoo Finance
     all_series["DXY_Index"] = fetch_dxy_yahoo(START_DATE, END_DATE)
+
+    # VIX via Yahoo Finance (Chai et al.: grows 4% →7.5% of gold forecast error variance)
+    print("\n[INFO] Fetching VIX_Index (^VIX) from Yahoo Finance ...")
+    for col_name, (ticker, desc) in PRIORITY_YAHOO_SERIES.items():
+        s = fetch_yahoo(ticker, col_name, START_DATE, END_DATE)
+        if not s.empty:
+            all_series[col_name] = s
+            print(f"  [{col_name}] fetched {len(s)} observations.")
+        else:
+            print(f"  [WARN] {col_name} empty — will be missing from output.")
 
     # Merge onto daily business-day grid
     print("\n[INFO] Merging all series to daily business-day index ...")

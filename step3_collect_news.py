@@ -96,6 +96,27 @@ FINANCE_KEYWORDS = [
 ]
 FINANCE_PATTERN = re.compile("|".join(FINANCE_KEYWORDS), re.IGNORECASE)
 
+NOISE_PATTERN = re.compile(
+    r"(wildfire|wildfires|forest fire|earthquake|volcano|flood|tsunami|"
+    r"shark attack|animal attack|dog attack|bear attack|snake|crocodile|"
+    r"heart attack|panic attack|cancer|patient|surgery|hospital|medical|"
+    r"bitcoin|crypto|altcoin|solana|ethereum|binance|doge|meme coin|"
+    r"earnings|quarterly results|stock split|ipo|merger|acquisition|"
+    r"lawsuit|recall|product launch|retail sales|consumer confidence|"
+    r"housing starts|pmi survey|manufacturing index|car sales|auto sales|"
+    r"sports|nfl|nba|cricket|tennis|football|olympic|celebrity|entertainment|movie|actor|weather|hurricane|tornado)",
+    re.IGNORECASE
+)
+DIRECT_GOLD_PATTERN = re.compile(r"gold|xau|bullion|spot gold|gld|gold futures", re.IGNORECASE)
+
+def is_gold_relevant_headline(headline: str) -> bool:
+    """True if headline is directly relevant to gold, macro or geopolitics without noise."""
+    if not headline or not FINANCE_PATTERN.search(headline):
+        return False
+    if NOISE_PATTERN.search(headline) and not DIRECT_GOLD_PATTERN.search(headline):
+        return False
+    return True
+
 # ── GOLD CATEGORY CLASSIFICATION ─────────────────────────────────────────────
 # Each headline gets a category tag for downstream feature engineering.
 # Ordered by priority (first match wins).
@@ -270,7 +291,7 @@ def _fetch_gnews(query: str, label: str) -> list:
             publisher = publisher.strip()
         title = title.strip()
 
-        if not title or not FINANCE_PATTERN.search(title):
+        if not is_gold_relevant_headline(title):
             continue
 
         pub_tag  = item.find("pubDate")
@@ -317,44 +338,23 @@ def collect_google_news() -> pd.DataFrame:
 # SOURCES B–L: DIRECT RSS FEEDS (enhanced)
 # ─────────────────────────────────────────────────────────────────────────────
 RSS_SOURCES = [
-    # ── Yahoo Finance ticker feeds ──────────────────────────────────────────
+    # ── Yahoo Finance ticker feeds (Gold, Silver, Oil, DXY) ─────────────────
     ("https://finance.yahoo.com/rss/headline?s=GC=F",     "Yahoo Finance", False),
     ("https://finance.yahoo.com/rss/headline?s=SI=F",     "Yahoo Finance", False),
     ("https://finance.yahoo.com/rss/headline?s=CL=F",     "Yahoo Finance", False),
     ("https://finance.yahoo.com/rss/headline?s=DX-Y.NYB", "Yahoo Finance", False),
-    # ── ForexLive ───────────────────────────────────────────────────────────
-    ("https://www.forexlive.com/feed/news",               "ForexLive",     True),
-    # ── FXStreet ────────────────────────────────────────────────────────────
-    ("https://www.fxstreet.com/rss/news",                 "FXStreet",      True),
-    # ── CNBC Economy ────────────────────────────────────────────────────────
+    # ── Gold Specialist & Bullion Feeds ─────────────────────────────────────
+    ("https://www.goldbroker.com/news.rss",               "GoldBroker",    False),
+    # ── Macro / Financial News ──────────────────────────────────────────────
     ("https://www.cnbc.com/id/20910258/device/rss/rss.html", "CNBC",      True),
-    # ── Seeking Alpha (GLD ETF) ─────────────────────────────────────────────
     ("https://seekingalpha.com/api/sa/combined/GLD.xml",  "Seeking Alpha", True),
-    # ── MarketWatch ─────────────────────────────────────────────────────────
     ("https://feeds.marketwatch.com/marketwatch/marketpulse/",        "MarketWatch", True),
     ("https://feeds.marketwatch.com/marketwatch/realtimeheadlines/",  "MarketWatch", True),
-    # ── Financial Times ─────────────────────────────────────────────────────
     ("https://www.ft.com/rss/home",                       "Financial Times", True),
-
-    # ── NEW: Reuters World (breaking geopolitical/war news) ─────────────────
-    ("https://feeds.reuters.com/Reuters/worldNews",       "Reuters",       True),
-    ("https://feeds.reuters.com/reuters/businessNews",    "Reuters",       True),
-    ("https://feeds.reuters.com/reuters/topNews",         "Reuters",       True),
-
-    # ── NEW: Kitco Gold News (dedicated gold outlet) ─────────────────────────
-    ("https://www.kitco.com/rss/kitco-news.xml",          "Kitco",         False),
-
-    # ── NEW: Investing.com gold & commodities ────────────────────────────────
-    ("https://www.investing.com/rss/news_14.rss",         "Investing.com", True),  # commodities
-    ("https://www.investing.com/rss/news_25.rss",         "Investing.com", True),  # forex
-    ("https://www.investing.com/rss/news_1.rss",          "Investing.com", True),  # top news
-
-    # ── NEW: AP News (war/conflict/US foreign policy) ────────────────────────
-    ("https://rsshub.app/ap/topics/apf-topnews",          "AP News",       True),
-    ("https://feeds.apnews.com/rss/topnews",              "AP News",       True),
-
-    # ── GEOPOLITICAL / MILITARY (key gold safe-haven drivers) ────────────────
-    ("https://www.aljazeera.com/xml/rss/all.xml",         "Al Jazeera",   True),   # geopolitical conflicts
+    ("https://feeds.bbci.co.uk/news/business/rss.xml",    "BBC Business",  True),
+    # ── Geopolitical & War Hotspots (Gold Safe-Haven Drivers) ───────────────
+    ("https://www.aljazeera.com/xml/rss/all.xml",         "Al Jazeera",    True),
+    ("https://feeds.bbci.co.uk/news/world/rss.xml",       "BBC World",     True),
 ]
 
 
@@ -384,7 +384,7 @@ def _parse_rss(url: str, source_name: str, apply_filter: bool) -> list:
         title = re.sub(r"<[^>]+>", "", title).strip()
         if not title:
             continue
-        if apply_filter and not FINANCE_PATTERN.search(title):
+        if apply_filter and not is_gold_relevant_headline(title):
             continue
 
         pub_tag = (item.find("pubDate") or item.find("published")

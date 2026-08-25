@@ -24,7 +24,14 @@ def main():
     df['Date'] = pd.to_datetime(df['Date'])
     df = df.sort_values('Date').reset_index(drop=True)
     
-    X = df.drop(columns=['Date', 'Target_Direction'])
+    EXCLUDE_COLS = [
+        'Date',
+        'Target_Direction',     # primary target
+        'Target_SD_Binary',     # SD-based label variant
+        'Target_SD_3class',     # SD-based 3-class label
+        'Next_Day_Return',      # raw future return
+    ]
+    X = df.drop(columns=[c for c in EXCLUDE_COLS if c in df.columns])
     y = df['Target_Direction']
 
     # Chronological Split (80% Train, 20% Test)

@@ -9,9 +9,24 @@ if sys.platform == "win32":
     os.system("chcp 65001 > nul")
     sys.stdout.reconfigure(encoding='utf-8')
 
-OUTPUT_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_DIR  = os.path.dirname(os.path.abspath(__file__))
 FEATURES_IN = os.path.join(OUTPUT_DIR, "master_features.csv")
 DATASET_OUT = os.path.join(OUTPUT_DIR, "multimodal_master_dataset.csv")
+
+# ── WIN-RATE UPGRADE CONSTANTS ────────────────────────────────────────────────
+# SD-based dynamic labeling (Dakalbab et al.)
+# Threshold multiplier on rolling std — 0.5σ captures significant daily moves
+SD_WINDOW     = 20     # rolling window matching volatility gate
+SD_MULTIPLIER = 0.5    # 0.5σ threshold — calibrate empirically if desired
+
+# Priority macro features with full 1–5 day lag structure (Chai et al.)
+# Crude oil ≈89% of gold forecast error variance; VIX 4-7.5%; DXY only 0.5%
+PRIORITY_MACRO  = ['WTI_Crude_Oil', 'VIX_Index']
+STANDARD_MACRO  = [
+    'CPI_US', 'FedFunds_Rate', 'Unemployment_Rate', 'NFP_Change',
+    'PCE_Deflator', 'US_10Y_Yield', 'Real_GDP_Growth',
+    'M2_Money_Supply', 'DXY_Index'
+]
 
 
 def find_bb_columns(df_cols):
@@ -92,18 +107,49 @@ def main():
     for bb_col in [bbl, bbm, bbu, bbb, bbp]:
         if bb_col and bb_col in df.columns:
             cols_to_drop.append(bb_col)
+            
+    # B4. Convert absolute Volume Profile & Order Flow levels to Close price ratios
+    vp_abs_levels = [c for c in df.columns if c.startswith(('POC_', 'VAH_', 'VAL_', 'VWAP_')) and c.count('_') == 1]
+    for col in vp_abs_levels:
+        df[f'{col}_Ratio'] = df[col] / df['Close']
+        cols_to_drop.append(col)
+
     # Only drop columns that actually exist
     cols_to_drop = [c for c in cols_to_drop if c in df.columns]
     df = df.drop(columns=cols_to_drop)
-    print(f"Dropped raw price/BB level columns: {cols_to_drop}")
+    print(f"Dropped raw price/BB level/VP absolute columns: {cols_to_drop}")
 
     # C. Apply first-order differencing to macroeconomic levels (and their lags)
-    macro_cols = [
-        'CPI_US', 'FedFunds_Rate', 'Unemployment_Rate', 'NFP_Change',
-        'WTI_Crude_Oil', 'PCE_Deflator', 'US_10Y_Yield', 'Real_GDP_Growth',
-        'M2_Money_Supply', 'DXY_Index'
-    ]
-    for base_col in macro_cols:
+    # ── Priority macro: WTI_Crude_Oil + VIX_Index get full 1-5 day lag structure ──
+    # Chai et al. SVAR: WTI ~89% of gold forecast error variance;
+    # VIX contribution grows 4%→7.5% over forecast horizon.
+    # Full 5-day lag window matches the empirical macro digestion window.
+    for base_col in PRIORITY_MACRO:
+        if base_col in df.columns:
+            df[f'{base_col}_Diff'] = df[base_col].diff()
+            # Return (log-diff) for momentum
+            df[f'{base_col}_Return'] = np.log(
+                df[base_col].clip(lower=1e-8) / df[base_col].clip(lower=1e-8).shift(1)
+            )
+            df = df.drop(columns=[base_col])
+        # Full 1-5 day lag structure (not just 1 and 3)
+        for lag in [1, 2, 3, 4, 5]:
+            lag_col = f'{base_col}_Lag_{lag}'
+            if lag_col in df.columns:
+                df[f'{lag_col}_Diff'] = df[lag_col].diff()
+                df = df.drop(columns=[lag_col])
+
+    # ── Oil-Gold spread momentum (dominant driver feature, Chai et al.) ──────────
+    # Captures divergence between crude oil momentum and gold momentum.
+    if 'WTI_Crude_Oil_Return' in df.columns and 'Close_Return' in df.columns:
+        df['Oil_Gold_Spread_Momentum'] = (
+            df['WTI_Crude_Oil_Return'].rolling(5).mean()
+            - df['Close_Return'].rolling(5).mean()
+        )
+        print("Added Oil_Gold_Spread_Momentum (Chai et al. dominant driver feature).")
+
+    # ── Standard macro: lags 1 and 3 only (DXY fully absorbed in ~5 days, 0.5% variance) ──
+    for base_col in STANDARD_MACRO:
         if base_col in df.columns:
             df[f'{base_col}_Diff'] = df[base_col].diff()
             df = df.drop(columns=[base_col])
@@ -114,6 +160,8 @@ def main():
                 df = df.drop(columns=[lag_col])
 
     print("Transformed all prices and macroeconomic indicators to stationary series.")
+    print(f"  Priority macro (1-5 day lags): {PRIORITY_MACRO}")
+    print(f"  Standard macro (1,3 day lags): {STANDARD_MACRO}")
 
     # D. Additional momentum features for enhanced win rate
     # Price momentum: close above/below its 20-day rolling mean
@@ -131,15 +179,41 @@ def main():
     inference_df = df.iloc[[-1]].copy()
     inference_df = inference_df.drop(columns=['Next_Day_Return'], errors='ignore')
 
-    # 3. Filter flat days where |return| < 0.08% (0.0008 log return)
+    # 3a. Existing binary label (unchanged — kept as primary target)
     rows_before_filter = len(df)
     df = df[df['Next_Day_Return'].abs() >= 0.0008].copy()
     rows_after_filter = len(df)
     print(f"Filtered {rows_before_filter - rows_after_filter} flat days (|return| < 0.08%).")
 
-    # 4. Create binary target direction (1 if tomorrow goes up, 0 if down)
     df['Target_Direction'] = np.where(df['Next_Day_Return'] > 0, 1, 0)
-    print("Generated binary classification target: 'Target_Direction'.")
+    print("Generated primary binary classification target: 'Target_Direction'.")
+
+    # 3b. SD-based dynamic label (Dakalbab et al.)
+    # Identifies "significant" moves using a regime-adaptive rolling std threshold.
+    # This label is nearly uncorrelated with fixed-threshold labels (corr ~0.13-0.42)
+    # — meaning it captures genuinely different market behavior.
+    rolling_std = df['Close_Return'].rolling(SD_WINDOW).std().shift(1)  # no lookahead
+    significant = df['Next_Day_Return'].abs() > (rolling_std.fillna(1e-4) * SD_MULTIPLIER)
+
+    # 3-class version: 1=sig-up, 0=insignificant, -1=sig-down
+    df['Target_SD_3class'] = 0
+    df.loc[significant & (df['Next_Day_Return'] > 0), 'Target_SD_3class'] = 1
+    df.loc[significant & (df['Next_Day_Return'] < 0), 'Target_SD_3class'] = -1
+
+    # Binary version (significant move or not) — used as an alternative classifier target
+    df['Target_SD_Binary'] = (df['Target_SD_3class'] != 0).astype(int)
+
+    sd_sig_pct = df['Target_SD_Binary'].mean() * 100
+    sd_up_pct  = (df['Target_SD_3class'] == 1).sum() / len(df) * 100
+    sd_dn_pct  = (df['Target_SD_3class'] == -1).sum() / len(df) * 100
+    print(f"\nSD-Label stats (window={SD_WINDOW}, mult={SD_MULTIPLIER}\u03c3):")
+    print(f"  Significant moves    : {sd_sig_pct:.1f}% of days")
+    print(f"  Sig-Up (1)           : {sd_up_pct:.1f}%")
+    print(f"  Sig-Down (-1)        : {sd_dn_pct:.1f}%")
+    print(f"  Insignificant (0)    : {100-sd_sig_pct:.1f}%")
+    print("  [NOTE] Run step7 with target='Target_Direction' (primary) and compare")
+    print("         vs 'Target_SD_Binary' (adaptive) to test label robustness.")
+    print("Generated adaptive SD-based target: 'Target_SD_Binary' + 'Target_SD_3class'.")
 
     # Drop original Close column (only keep Close_Return)
     df = df.drop(columns=['Close'], errors='ignore')

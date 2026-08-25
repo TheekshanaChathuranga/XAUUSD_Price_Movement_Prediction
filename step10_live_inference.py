@@ -23,6 +23,46 @@ SCALER_PATH    = os.path.join(OUTPUT_DIR, "scaler.pkl")
 THRESHOLD_PATH = os.path.join(OUTPUT_DIR, "model_threshold.json")
 RAW_PRICES     = os.path.join(OUTPUT_DIR, "xauusd_raw_prices.csv")
 
+
+# ── CONSENSUS + COMPULSORY-AGENT SIGNAL (Hernes et al.) ──────────────────────
+def qualify_signal_consensus(prob_up, p_cat, p_xgb, p_lgb,
+                             long_thresh, short_thresh,
+                             rsi_regime=None, high_vol=None):
+    """
+    Hernes et al. Consensus + Compulsory-Agent signal aggregation.
+    Replaces flat majority vote (MyStrategy — worst performer in their study).
+
+    Gate 1 (COMPULSORY): High-vol regime vetoes unconditionally.
+    Gate 2: Adaptive percentile thresholds on meta-learner prob.
+    Gate 3 (CONSENSUS): Median of sorted [p_cat, p_xgb, p_lgb] must agree.
+    Gate 4 (COMPULSORY): RSI overbought/oversold vetoes conflicting signals.
+    """
+    # Compulsory volatility veto
+    if high_vol is not None and high_vol == 1:
+        return "HOLD (High-Vol Veto)"
+
+    # Adaptive threshold gate
+    if prob_up >= long_thresh:
+        raw_signal = "LONG (BUY)"
+    elif prob_up <= short_thresh:
+        raw_signal = "SHORT (SELL)"
+    else:
+        return "HOLD"
+
+    # Consensus gate: median of sorted model probs
+    consensus_prob = sorted([p_cat, p_xgb, p_lgb])[1]   # median
+    if "LONG" in raw_signal  and consensus_prob <= 0.50:
+        return "HOLD (No Consensus)"
+    if "SHORT" in raw_signal and consensus_prob >= 0.50:
+        return "HOLD (No Consensus)"
+
+    # Compulsory RSI veto
+    if rsi_regime is not None:
+        if "LONG"  in raw_signal and rsi_regime == 1:  return "HOLD (RSI Overbought)"
+        if "SHORT" in raw_signal and rsi_regime == -1: return "HOLD (RSI Oversold)"
+
+    return raw_signal
+
 def calculate_atr(df, period=14):
     high_low   = df['High'] - df['Low']
     high_close = np.abs(df['High'] - df['Close'].shift())
@@ -35,8 +75,13 @@ def load_threshold():
     if os.path.exists(THRESHOLD_PATH):
         with open(THRESHOLD_PATH) as f:
             cfg = json.load(f)
-        return cfg.get("threshold", 0.5), cfg.get("confidence_band", 0.65)
-    return 0.5, 0.65
+        return (
+            cfg.get("threshold", 0.5),
+            cfg.get("confidence_band", 0.65),
+            cfg.get("sl_atr_mult", 1.5),   # fallback to original 1.5× SL
+            cfg.get("tp_atr_mult", 3.0),   # fallback to original 3.0× TP
+        )
+    return 0.5, 0.65, 1.5, 3.0
 
 def load_adaptive_thresholds():
     """
@@ -44,8 +89,8 @@ def load_adaptive_thresholds():
     distribution. The meta-learner compresses probs into a narrow band
     (e.g. 0.52–0.66), making hardcoded 0.65 unreachable.
     """
-    PERCENTILE_LONG  = 70
-    PERCENTILE_SHORT = 30
+    PERCENTILE_LONG  = 85
+    PERCENTILE_SHORT = 15
     preds_path = os.path.join(OUTPUT_DIR, "test_predictions.csv")
     if os.path.exists(preds_path):
         try:
@@ -115,7 +160,7 @@ def main():
     p_cat = float(m_cat.predict_proba(X_inf_df)[0, 1])
     p_xgb = float(m_xgb.predict_proba(X_inf_df)[0, 1])
     p_lgb = float(m_lgb.predict(X_inf_df.values)[0])
-    prob_up = float(meta.predict_proba(np.array([[p_cat, p_xgb, p_lgb]]))[0, 1])
+    prob_up = float((p_cat + p_xgb + p_lgb) / 3.0)
 
     long_thresh, short_thresh = load_adaptive_thresholds()
 
@@ -136,9 +181,20 @@ def main():
     print(f"Model Probabilities  : CatBoost={p_cat:.4f}  XGBoost={p_xgb:.4f}  LightGBM={p_lgb:.4f}")
     print(f"Meta-Learner Prob    : {prob_up:.4f} (UP)  /  {1-prob_up:.4f} (DOWN)")
     print(f"Adaptive Thresholds  : LONG >= {long_thresh:.4f}  SHORT <= {short_thresh:.4f}")
+
+    # Consensus signal (Hernes et al.) — replaces flat majority vote
+    consensus_prob = sorted([p_cat, p_xgb, p_lgb])[1]   # median
+    raw_signal = qualify_signal_consensus(
+        prob_up, p_cat, p_xgb, p_lgb,
+        long_thresh, short_thresh,
+        rsi_regime=None,   # live RSI regime not available without feature pipeline
+        high_vol=None      # live vol regime not available without feature pipeline
+    )
+
+    print(f"Consensus Prob       : {consensus_prob:.4f} (median of 3 models)")
     print(f"Algorithmic Signal   : {raw_signal}")
-    consensus_ok = models_bullish >= 2 or models_bearish >= 2 or "HOLD" in raw_signal
-    print(f"Ensemble Consensus   : {'✓ ALIGNED' if consensus_ok else '✗ DIVERGED'} ({models_bullish}/3 bullish)")
+    consensus_ok = consensus_prob > 0.50 if "LONG" in raw_signal else consensus_prob < 0.50
+    print(f"Ensemble Consensus   : {'OK' if 'HOLD' not in raw_signal else 'BLOCKED'}")
 
     print("\n[3] AI Reasoning (SHAP Feature Importance)...")
     explainer  = shap.TreeExplainer(m_cat)
@@ -154,11 +210,11 @@ def main():
 
     print("\n[4] Risk Management Parameters...")
     if "HOLD" in raw_signal:
-        print("Model confidence is too low or models diverge. Holding cash to protect capital.")
+        print("Model confidence too low or consensus blocked. Holding cash.")
         print("No trade parameters generated.")
         sys.exit(0)
 
-    # Get recent raw prices for ATR-based dynamic stop loss
+    # Get recent raw prices for ATR-based dynamic stop loss / take profit
     raw_df = pd.read_csv(RAW_PRICES)
     raw_df['Date'] = pd.to_datetime(raw_df['Date'])
     raw_df = raw_df.sort_values('Date').reset_index(drop=True)
@@ -166,15 +222,20 @@ def main():
     latest_atr   = raw_df['ATR'].iloc[-1]
     latest_close = raw_df['Close'].iloc[-1]
 
+    # Load SL/TP multipliers from model_threshold.json (set by step9b sweep)
+    _, _, sl_mult, tp_mult = load_threshold()
+
     entry_price = latest_close
     print(f"Calculated 14-Day ATR : ${latest_atr:.2f}")
+    print(f"SL Multiplier         : {sl_mult}x ATR  (from model_threshold.json)")
+    print(f"TP Multiplier         : {tp_mult}x ATR  (from model_threshold.json)")
 
     if "LONG" in raw_signal:
-        stop_loss   = entry_price - (1.5 * latest_atr)
-        take_profit = entry_price + (3.0 * latest_atr)
+        stop_loss   = entry_price - (sl_mult * latest_atr)
+        take_profit = entry_price + (tp_mult * latest_atr)
     else:
-        stop_loss   = entry_price + (1.5 * latest_atr)
-        take_profit = entry_price - (3.0 * latest_atr)
+        stop_loss   = entry_price + (sl_mult * latest_atr)
+        take_profit = entry_price - (tp_mult * latest_atr)
 
     risk_amt   = abs(entry_price - stop_loss)
     reward_amt = abs(take_profit - entry_price)
@@ -183,8 +244,8 @@ def main():
     print("          TRADING EXECUTION PLAN")
     print("==================================================")
     print(f"  Entry Price : ${entry_price:,.2f}")
-    print(f"  Stop Loss   : ${stop_loss:,.2f} (1.5× ATR Risk)")
-    print(f"  Take Profit : ${take_profit:,.2f} (3.0× ATR Reward)")
+    print(f"  Stop Loss   : ${stop_loss:,.2f} ({sl_mult}x ATR Risk)")
+    print(f"  Take Profit : ${take_profit:,.2f} ({tp_mult}x ATR Reward)")
     print(f"  Risk Amount : ${risk_amt:,.2f}")
     print(f"  Reward Amt  : ${reward_amt:,.2f}")
     print(f"  Risk:Reward : 1:{reward_amt/risk_amt:.1f}")

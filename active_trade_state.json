@@ -1,0 +1,10 @@
+{
+  "status": "active",
+  "last_outcome": "WIN",
+  "last_outcome_time": "2026-08-24T11:46:39.718563",
+  "signal": "LONG",
+  "entry_price": 4646.49,
+  "stop_loss": 4596.49,
+  "take_profit": 4696.49,
+  "be_triggered": false
+}

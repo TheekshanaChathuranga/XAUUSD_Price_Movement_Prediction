@@ -28,6 +28,8 @@ Win-Rate Mechanism:
   1. POC Distance Filter  → only trade in direction consistent with POC location
   2. LVN Zone Detection   → flag unstable price zones (reduce position size)
   3. VAH/VAL Breakout     → confirm or suppress signals at key boundaries
+  4. Order Flow / Profile Shape → P-shape (short-covering), b-shape (long-liquidation)
+  5. VWAP & CVD           → institutional momentum and delta accumulation
 
 Lookback windows computed:
   VP_20  — short-term (1-month) profile
@@ -170,13 +172,17 @@ def classify_price_zone(close: float, bin_edges: np.ndarray,
     return in_hvn, in_lvn
 
 
-def extract_vp_features(close: float, vp: dict) -> dict:
+def extract_vp_features(close: float, vp: dict, window_high: float, window_low: float, daily_high: float, daily_low: float) -> dict:
     """
     Extract scalar features from a computed Volume Profile for a given Close price.
 
     Args:
-        close: Current day's closing price
-        vp:    Output dict from compute_volume_profile()
+        close:       Current day's closing price
+        vp:          Output dict from compute_volume_profile()
+        window_high: Highest price in the lookback window
+        window_low:  Lowest price in the lookback window
+        daily_high:  Current day's high price
+        daily_low:   Current day's low price
 
     Returns:
         dict of normalised scalar features
@@ -195,6 +201,28 @@ def extract_vp_features(close: float, vp: dict) -> dict:
     in_hvn, in_lvn = classify_price_zone(
         close, vp['bin_edges'], vp['bin_vols'], vp['mean_bin_vol']
     )
+    
+    _, in_lvn_high = classify_price_zone(
+        daily_high, vp['bin_edges'], vp['bin_vols'], vp['mean_bin_vol']
+    )
+    _, in_lvn_low = classify_price_zone(
+        daily_low, vp['bin_edges'], vp['bin_vols'], vp['mean_bin_vol']
+    )
+    # LVN Rejection: Price tested LVN but closed outside it
+    lvn_rejection = 1 if ((in_lvn_high == 1 or in_lvn_low == 1) and in_lvn == 0) else 0
+
+    # Volume Profile Shape Classification (P, b, D)
+    window_range = window_high - window_low
+    if window_range > 1e-9:
+        poc_percentile = (poc - window_low) / window_range
+        if poc_percentile > 0.66:
+            vp_shape = 1    # P-shape (Bullish / Short-covering)
+        elif poc_percentile < 0.33:
+            vp_shape = -1   # b-shape (Bearish / Long-liquidation)
+        else:
+            vp_shape = 0    # D-shape (Balanced)
+    else:
+        vp_shape = 0
 
     # Volume Imbalance: asymmetry of volume above/below POC
     poc_bin      = np.argmax(vp['bin_vols'])
@@ -217,6 +245,8 @@ def extract_vp_features(close: float, vp: dict) -> dict:
         'Price_vs_VAL':   round(price_vs_val, 6),
         'In_HVN':         in_hvn,
         'In_LVN':         in_lvn,
+        'LVN_Rejection':  lvn_rejection,
+        'VP_Shape':       vp_shape,
         'Vol_Imbalance':  round(vol_imbalance, 6),
         'VP_Long_Bias':   vp_long_bias,
         'VP_Short_Bias':  vp_short_bias,
@@ -257,7 +287,12 @@ def compute_rolling_vp(prices: pd.DataFrame, lookback: int, suffix: str) -> pd.D
             records.append({'Date': date})
             continue
 
-        features = extract_vp_features(close, vp)
+        window_high = window['High'].max()
+        window_low  = window['Low'].min()
+        daily_high  = prices['High'].iloc[i]
+        daily_low   = prices['Low'].iloc[i]
+
+        features = extract_vp_features(close, vp, window_high, window_low, daily_high, daily_low)
         features['Date'] = date
         records.append(features)
 
@@ -303,6 +338,21 @@ def build_volume_profile_features(prices_path: str = PRICES_IN,
 
     # Replace any zero volume with 1 to avoid degenerate profiles
     prices['Tick_Volume'] = prices['Tick_Volume'].replace(0, 1.0)
+    
+    # ── Vectorized VWAP and CVD Calculation ───────────────────────────────
+    prices['Typical_Price'] = (prices['High'] + prices['Low'] + prices['Close']) / 3.0
+    range_hl = prices['High'] - prices['Low']
+    range_hl = range_hl.replace(0, 1e-9)
+    # Approximate continuous delta using intraday relative close position
+    prices['Daily_Delta'] = prices['Tick_Volume'] * ((prices['Close'] - prices['Open']) / range_hl)
+
+    for lookback in [LOOKBACK_SHORT, LOOKBACK_MID, LOOKBACK_LONG]:
+        vol_sum = prices['Tick_Volume'].rolling(lookback).sum()
+        typical_vol_sum = (prices['Typical_Price'] * prices['Tick_Volume']).rolling(lookback).sum()
+        prices[f'VWAP_{lookback}'] = typical_vol_sum / vol_sum
+        prices[f'CVD_{lookback}'] = prices['Daily_Delta'].rolling(lookback).sum()
+    
+    # We will pass these VWAP and CVD columns to the final output by merging them later
 
     print(f"\n  Loaded {len(prices):,} bars of price data.")
     print(f"  Date range : {prices['Date'].min().date()} → {prices['Date'].max().date()}")
@@ -324,6 +374,11 @@ def build_volume_profile_features(prices_path: str = PRICES_IN,
     # ── Merge all windows ─────────────────────────────────────────────────
     vp_all = vp_short.merge(vp_mid,  on='Date', how='inner')
     vp_all = vp_all.merge(vp_long, on='Date', how='inner')
+    
+    # Merge VWAP and CVD from prices dataframe
+    vwap_cvd_cols = ['Date'] + [f'VWAP_{l}' for l in [LOOKBACK_SHORT, LOOKBACK_MID, LOOKBACK_LONG]] + \
+                    [f'CVD_{l}' for l in [LOOKBACK_SHORT, LOOKBACK_MID, LOOKBACK_LONG]]
+    vp_all = vp_all.merge(prices[vwap_cvd_cols], on='Date', how='inner')
 
     # ── Cross-window features ─────────────────────────────────────────────
     # POC Confluence: all three windows agree on direction

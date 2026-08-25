@@ -1,0 +1,1968 @@
+{
+  "TechnicalAnalystReport": {
+    "$defs": {
+      "Direction": {
+        "description": "Primary directional bias.",
+        "enum": [
+          "BULLISH",
+          "BEARISH",
+          "NEUTRAL"
+        ],
+        "title": "Direction",
+        "type": "string"
+      },
+      "VolatilityRegime": {
+        "description": "Market volatility classification.",
+        "enum": [
+          "LOW",
+          "NORMAL",
+          "HIGH",
+          "EXTREME"
+        ],
+        "title": "VolatilityRegime",
+        "type": "string"
+      }
+    },
+    "description": "Output of the Technical Analyst agent.\n\nCovers trend direction, momentum, volatility regime, and the quant\nensemble's raw probability output. This is the bridge between the\nexisting CatBoost/XGBoost/LightGBM pipeline and the agent layer.",
+    "properties": {
+      "trend_direction": {
+        "$ref": "#/$defs/Direction",
+        "description": "Overall trend direction based on EMA alignment and price action."
+      },
+      "ema_alignment": {
+        "description": "EMA alignment state. e.g. 'EMA9 > EMA21 > EMA50 (bullish stack)' or 'price below all EMAs (bearish)'.",
+        "title": "Ema Alignment",
+        "type": "string"
+      },
+      "momentum_state": {
+        "description": "MACD momentum description. e.g. 'MACD line crossed above signal \u2014 bullish momentum building' or 'MACD histogram shrinking \u2014 momentum fading'.",
+        "title": "Momentum State",
+        "type": "string"
+      },
+      "macd_crossover": {
+        "description": "True if a MACD signal-line crossover occurred in the last 3 bars.",
+        "title": "Macd Crossover",
+        "type": "boolean"
+      },
+      "volatility_regime": {
+        "$ref": "#/$defs/VolatilityRegime",
+        "description": "Current volatility regime based on ATR relative to 20-day average ATR."
+      },
+      "bb_squeeze": {
+        "description": "True if Bollinger Bands are in a squeeze (bandwidth below 20-day average), indicating a potential breakout setup.",
+        "title": "Bb Squeeze",
+        "type": "boolean"
+      },
+      "bb_position": {
+        "description": "Price position within Bollinger Bands. e.g. 'price at upper band (87th percentile)' or 'price near middle band'.",
+        "title": "Bb Position",
+        "type": "string"
+      },
+      "rsi_value": {
+        "description": "Current RSI(14) value.",
+        "maximum": 100.0,
+        "minimum": 0.0,
+        "title": "Rsi Value",
+        "type": "number"
+      },
+      "rsi_overbought": {
+        "description": "True if RSI > 70.",
+        "title": "Rsi Overbought",
+        "type": "boolean"
+      },
+      "rsi_oversold": {
+        "description": "True if RSI < 30.",
+        "title": "Rsi Oversold",
+        "type": "boolean"
+      },
+      "quant_prob_up": {
+        "description": "Ensemble meta-learner probability of price going UP (CatBoost/XGB/LGB mean).",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "title": "Quant Prob Up",
+        "type": "number"
+      },
+      "quant_signal": {
+        "description": "Raw quant signal string. e.g. 'LONG (BUY)', 'SHORT (SELL)', 'HOLD'.",
+        "title": "Quant Signal",
+        "type": "string"
+      },
+      "quant_consensus": {
+        "description": "True if at least 2/3 base models agree on direction (consensus gate passed).",
+        "title": "Quant Consensus",
+        "type": "boolean"
+      },
+      "confidence_score": {
+        "description": "Technical analyst's composite confidence score (0\u20131). Derived from: signal strength + momentum alignment + volatility regime + RSI state.",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "title": "Confidence Score",
+        "type": "number"
+      },
+      "signal_conflicts": {
+        "description": "List of detected conflicts between indicators. e.g. ['Quant says LONG but RSI is overbought (77)', 'BB squeeze active \u2014 breakout direction uncertain'].",
+        "items": {
+          "type": "string"
+        },
+        "title": "Signal Conflicts",
+        "type": "array"
+      },
+      "summary": {
+        "description": "Concise ~150-word structured narrative covering trend, momentum, volatility regime, and quant signal alignment. No free-form speculation.",
+        "maxLength": 200,
+        "title": "Summary",
+        "type": "string"
+      }
+    },
+    "required": [
+      "trend_direction",
+      "ema_alignment",
+      "momentum_state",
+      "macd_crossover",
+      "volatility_regime",
+      "bb_squeeze",
+      "bb_position",
+      "rsi_value",
+      "rsi_overbought",
+      "rsi_oversold",
+      "quant_prob_up",
+      "quant_signal",
+      "quant_consensus",
+      "confidence_score",
+      "summary"
+    ],
+    "title": "TechnicalAnalystReport",
+    "type": "object"
+  },
+  "MacroAnalystReport": {
+    "$defs": {
+      "DigestionWindow": {
+        "description": "Where we are in the ~5-trading-day shock digestion window (Chai et al. 2021).\nMarkets typically absorb oil/VIX/DXY shocks within 5 days.\nEARLY \u2192 shock occurred <2 days ago, still propagating\nMID   \u2192 2-3 days post-shock, partial digestion\nLATE  \u2192 4-5 days post-shock, nearly absorbed\nNONE  \u2192 no significant recent shock detected",
+        "enum": [
+          "EARLY",
+          "MID",
+          "LATE",
+          "NONE"
+        ],
+        "title": "DigestionWindow",
+        "type": "string"
+      },
+      "Direction": {
+        "description": "Primary directional bias.",
+        "enum": [
+          "BULLISH",
+          "BEARISH",
+          "NEUTRAL"
+        ],
+        "title": "Direction",
+        "type": "string"
+      },
+      "GoldDriver": {
+        "description": "Dominant macro driver per Chai et al. 2021 SVAR analysis.\nOIL  \u2192 crude oil returns explain ~89% of gold forecast error variance\nVIX  \u2192 rising VIX is bullish for gold (4%\u21927.5% of variance over 10 periods)\nDXY  \u2192 negative but weak relationship (~0.5% of variance) \u2014 do NOT overweight\nMIXED \u2192 multiple drivers active simultaneously",
+        "enum": [
+          "OIL",
+          "VIX",
+          "DXY",
+          "MIXED",
+          "NONE"
+        ],
+        "title": "GoldDriver",
+        "type": "string"
+      },
+      "SignalStrength": {
+        "description": "Conviction level for a directional call.",
+        "enum": [
+          "STRONG",
+          "MODERATE",
+          "WEAK"
+        ],
+        "title": "SignalStrength",
+        "type": "string"
+      }
+    },
+    "description": "Output of the Macro/Fundamental Analyst agent.\n\nCRITICAL: This agent's reasoning is GROUNDED in the quantified relationships\nfrom Chai et al. 2021's SVAR analysis on gold price drivers:\n\n  1. Crude oil returns explain ~89% of gold's forecast error variance\n     \u2192 Oil price shocks are the DOMINANT driver. Weight heavily.\n\n  2. VIX has a positive, growing relationship with gold returns\n     (rises from ~4% to ~7.5% of variance over 10 periods)\n     \u2192 Rising VIX = bullish for gold.\n\n  3. DXY (USD index) has a NEGATIVE but WEAK relationship (~0.5% of variance)\n     \u2192 Do NOT let this agent overweight dollar moves.\n\n  4. All shocks are digested within ~5 trading days\n     \u2192 Always flag early/mid/late digestion window for any recent shock.",
+    "properties": {
+      "macro_bias": {
+        "$ref": "#/$defs/Direction",
+        "description": "Overall macro directional bias for gold based on current driver state."
+      },
+      "bias_strength": {
+        "$ref": "#/$defs/SignalStrength",
+        "description": "Conviction behind the macro bias \u2014 reflects clarity of dominant driver signal."
+      },
+      "dominant_driver": {
+        "$ref": "#/$defs/GoldDriver",
+        "description": "Dominant macro driver currently active per Chai et al. 2021 variance decomposition. OIL = crude oil shock (89% variance weight). VIX = fear spike (4-7.5%). DXY = dollar move (0.5% \u2014 low weight). MIXED = multiple active."
+      },
+      "oil_return_5d": {
+        "description": "Crude oil 5-day return (%). Positive = oil up = bullish gold signal.",
+        "title": "Oil Return 5D",
+        "type": "number"
+      },
+      "oil_shock_active": {
+        "description": "True if crude oil moved >3% in the last 5 trading days, triggering the dominant SVAR channel.",
+        "title": "Oil Shock Active",
+        "type": "boolean"
+      },
+      "oil_shock_direction": {
+        "$ref": "#/$defs/Direction",
+        "description": "Direction of the oil shock if active, else NEUTRAL."
+      },
+      "vix_level": {
+        "description": "Current VIX level.",
+        "minimum": 0.0,
+        "title": "Vix Level",
+        "type": "number"
+      },
+      "vix_direction": {
+        "$ref": "#/$defs/Direction",
+        "description": "VIX trend direction over the past 5 days. BULLISH = VIX rising (bullish for gold). BEARISH = VIX falling."
+      },
+      "vix_above_panic": {
+        "description": "True if VIX > 25 (PANIC regime threshold).",
+        "title": "Vix Above Panic",
+        "type": "boolean"
+      },
+      "dxy_level": {
+        "description": "Current DXY (USD index) level.",
+        "title": "Dxy Level",
+        "type": "number"
+      },
+      "dxy_direction": {
+        "$ref": "#/$defs/Direction",
+        "description": "DXY trend. BEARISH = dollar weakening (mildly bullish for gold). Note: DXY explains only ~0.5% of gold variance \u2014 do not overweight."
+      },
+      "dxy_impact_weight": {
+        "default": "LOW (~0.5% variance per Chai et al. 2021)",
+        "description": "Explicit reminder of DXY's limited explanatory power for this agent.",
+        "title": "Dxy Impact Weight",
+        "type": "string"
+      },
+      "digestion_window_status": {
+        "$ref": "#/$defs/DigestionWindow",
+        "description": "Position in the ~5-day shock digestion window (Chai et al. 2021). EARLY (<2d since shock): still propagating. MID (2-3d): partial. LATE (4-5d): nearly absorbed. NONE: no recent significant shock."
+      },
+      "days_since_last_shock": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Number of trading days since the last significant macro shock (if any).",
+        "title": "Days Since Last Shock"
+      },
+      "chai_2021_narrative": {
+        "description": "Explicit reference to which Chai et al. 2021 relationship is currently dominant and how it maps to the current macro state. Must name the specific SVAR finding.",
+        "maxLength": 300,
+        "title": "Chai 2021 Narrative",
+        "type": "string"
+      },
+      "summary": {
+        "description": "~150-word structured macro summary with explicit reference to which Chai et al. 2021 driver relationship is dominant. No generic macro commentary.",
+        "maxLength": 200,
+        "title": "Summary",
+        "type": "string"
+      }
+    },
+    "required": [
+      "macro_bias",
+      "bias_strength",
+      "dominant_driver",
+      "oil_return_5d",
+      "oil_shock_active",
+      "oil_shock_direction",
+      "vix_level",
+      "vix_direction",
+      "vix_above_panic",
+      "dxy_level",
+      "dxy_direction",
+      "digestion_window_status",
+      "chai_2021_narrative",
+      "summary"
+    ],
+    "title": "MacroAnalystReport",
+    "type": "object"
+  },
+  "SentimentAnalystReport": {
+    "$defs": {
+      "Direction": {
+        "description": "Primary directional bias.",
+        "enum": [
+          "BULLISH",
+          "BEARISH",
+          "NEUTRAL"
+        ],
+        "title": "Direction",
+        "type": "string"
+      },
+      "SignalStrength": {
+        "description": "Conviction level for a directional call.",
+        "enum": [
+          "STRONG",
+          "MODERATE",
+          "WEAK"
+        ],
+        "title": "SignalStrength",
+        "type": "string"
+      }
+    },
+    "description": "Output of the News/Sentiment Analyst agent.\n\nSynthesises FinBERT historical scores, live VADER scores, and\nGDELT event categories into a structured sentiment state.",
+    "properties": {
+      "sentiment_direction": {
+        "$ref": "#/$defs/Direction",
+        "description": "Overall sentiment direction for gold based on news flow."
+      },
+      "sentiment_intensity": {
+        "$ref": "#/$defs/SignalStrength",
+        "description": "Intensity of the sentiment signal. STRONG = scores far from neutral. WEAK = scores near zero. MODERATE = between."
+      },
+      "finbert_score": {
+        "description": "FinBERT mean sentiment score from historical news_sentiment_cache.csv (positive = bullish gold, negative = bearish gold).",
+        "maximum": 1.0,
+        "minimum": -1.0,
+        "title": "Finbert Score",
+        "type": "number"
+      },
+      "vader_score": {
+        "description": "Live VADER compound score (gold-context lexicon enhanced). Range -1 to +1.",
+        "maximum": 1.0,
+        "minimum": -1.0,
+        "title": "Vader Score",
+        "type": "number"
+      },
+      "blended_score": {
+        "description": "Blended sentiment: 70% FinBERT (historical) + 30% VADER (live). Matches the blend used in step11_api_server.py.",
+        "maximum": 1.0,
+        "minimum": -1.0,
+        "title": "Blended Score",
+        "type": "number"
+      },
+      "active_gdelt_categories": {
+        "description": "List of GDELT event categories detected in the past 4 hours. e.g. ['WAR_GEOPOLITICAL', 'FED_POLICY']. Categories: WAR_MILITARY, FED_POLICY, INFLATION, DOLLAR_FX, CRISIS, ENERGY, GOLD_MARKET.",
+        "items": {
+          "type": "string"
+        },
+        "title": "Active Gdelt Categories",
+        "type": "array"
+      },
+      "high_impact_event_active": {
+        "description": "True if WAR_MILITARY or FED_POLICY category is currently active in GDELT \u2014 these are the two highest-impact categories for gold per historical analysis.",
+        "title": "High Impact Event Active",
+        "type": "boolean"
+      },
+      "war_geopolitical_active": {
+        "description": "True if WAR_MILITARY GDELT category is active \u2014 triggers PANIC regime.",
+        "title": "War Geopolitical Active",
+        "type": "boolean"
+      },
+      "headline_sample": {
+        "description": "Up to 5 most relevant recent headlines (source of the sentiment reading).",
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 5,
+        "title": "Headline Sample",
+        "type": "array"
+      },
+      "news_volume_24h": {
+        "description": "Number of gold-relevant news articles processed in the last 24 hours.",
+        "minimum": 0,
+        "title": "News Volume 24H",
+        "type": "integer"
+      },
+      "summary": {
+        "description": "~150-word structured summary: sentiment direction, intensity, active GDELT categories, and whether any high-impact event category is live.",
+        "maxLength": 200,
+        "title": "Summary",
+        "type": "string"
+      }
+    },
+    "required": [
+      "sentiment_direction",
+      "sentiment_intensity",
+      "finbert_score",
+      "vader_score",
+      "blended_score",
+      "high_impact_event_active",
+      "war_geopolitical_active",
+      "headline_sample",
+      "news_volume_24h",
+      "summary"
+    ],
+    "title": "SentimentAnalystReport",
+    "type": "object"
+  },
+  "CalendarAnalystReport": {
+    "$defs": {
+      "VolatilityFlag": {
+        "description": "Calendar event proximity flag for the Calendar Analyst.",
+        "enum": [
+          "IMMINENT",
+          "APPROACHING",
+          "CLEAR"
+        ],
+        "title": "VolatilityFlag",
+        "type": "string"
+      }
+    },
+    "description": "Output of the Event/Calendar Analyst agent.\n\nFlags proximity to scheduled high-volatility macro events.\nThis report directly influences the Risk Management team's caution level\n\u2014 a high caution_level shifts weight toward the Safe/Conservative agent.",
+    "properties": {
+      "event_window_active": {
+        "description": "True if a HIGH-impact event (NFP/FOMC/CPI) is within \u00b12 hours of now. This is the primary agent-layer activation trigger.",
+        "title": "Event Window Active",
+        "type": "boolean"
+      },
+      "volatility_flag": {
+        "$ref": "#/$defs/VolatilityFlag",
+        "description": "IMMINENT = HIGH event within 2h. APPROACHING = HIGH event within 24h. CLEAR = no HIGH event in next 24h."
+      },
+      "events_within_2h": {
+        "description": "List of HIGH-impact events within \u00b12 hours. Each dict: {'event': str, 'date': str, 'impact': str, 'hours_until': float}.",
+        "items": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": "Events Within 2H",
+        "type": "array"
+      },
+      "events_within_24h": {
+        "description": "List of all tracked events (HIGH + MEDIUM) within the next 24 hours. Each dict: {'event': str, 'date': str, 'impact': str, 'hours_until': float}.",
+        "items": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "title": "Events Within 24H",
+        "type": "array"
+      },
+      "caution_level": {
+        "description": "Caution level for Risk Management team weighting. 0 = CLEAR (no upcoming events). 1 = LOW (MEDIUM event within 24h). 2 = MEDIUM (HIGH event within 24h). 3 = HIGH (HIGH event within 2h \u2014 IMMINENT). Each +1 shifts Risk team weighting toward Safe agent.",
+        "maximum": 3,
+        "minimum": 0,
+        "title": "Caution Level",
+        "type": "integer"
+      },
+      "next_high_impact_event": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Name of the next HIGH-impact event and its ETA. e.g. 'US NFP (August) in 1.5h'.",
+        "title": "Next High Impact Event"
+      },
+      "summary": {
+        "description": "Structured summary of calendar state: active event window, upcoming events, and recommended caution level for Risk Manager.",
+        "maxLength": 200,
+        "title": "Summary",
+        "type": "string"
+      }
+    },
+    "required": [
+      "event_window_active",
+      "volatility_flag",
+      "caution_level",
+      "summary"
+    ],
+    "title": "CalendarAnalystReport",
+    "type": "object"
+  },
+  "DebateSummary": {
+    "$defs": {
+      "DebateRound": {
+        "description": "A single round of the bull/bear debate (natural language \u2014 not structured).",
+        "properties": {
+          "round_number": {
+            "description": "Debate round index (1-based).",
+            "minimum": 1,
+            "title": "Round Number",
+            "type": "integer"
+          },
+          "bull_argument": {
+            "description": "Bullish researcher's argument for this round. Natural language. Must cite specific fields from analyst reports, not generic commentary. May NOT claim the quant ensemble is wrong \u2014 only cite context the model cannot see.",
+            "title": "Bull Argument",
+            "type": "string"
+          },
+          "bear_argument": {
+            "description": "Bearish researcher's argument for this round. Natural language. Must cite specific fields from analyst reports, not generic commentary. May NOT claim the quant ensemble is wrong \u2014 only cite context the model cannot see.",
+            "title": "Bear Argument",
+            "type": "string"
+          }
+        },
+        "required": [
+          "round_number",
+          "bull_argument",
+          "bear_argument"
+        ],
+        "title": "DebateRound",
+        "type": "object"
+      },
+      "DebateSide": {
+        "description": "Which side won the bull/bear debate.",
+        "enum": [
+          "BULL",
+          "BEAR",
+          "TIED"
+        ],
+        "title": "DebateSide",
+        "type": "string"
+      },
+      "SignalStrength": {
+        "description": "Conviction level for a directional call.",
+        "enum": [
+          "STRONG",
+          "MODERATE",
+          "WEAK"
+        ],
+        "title": "SignalStrength",
+        "type": "string"
+      }
+    },
+    "description": "Output of the Debate Facilitator agent.\n\nReviews the full debate transcript and produces a structured verdict.\nThis summary is passed to the Trader Agent \u2014 it does NOT override\nthe quant ensemble's core probability signal.",
+    "properties": {
+      "stronger_side": {
+        "$ref": "#/$defs/DebateSide",
+        "description": "Which side's case was better supported by the analyst evidence."
+      },
+      "confidence_in_verdict": {
+        "$ref": "#/$defs/SignalStrength",
+        "description": "Facilitator's confidence in the verdict. WEAK = debate was close."
+      },
+      "bull_key_arguments": {
+        "description": "Top 2\u20134 bullish arguments that were well-evidenced by analyst reports.",
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 4,
+        "title": "Bull Key Arguments",
+        "type": "array"
+      },
+      "bear_key_arguments": {
+        "description": "Top 2\u20134 bearish arguments that were well-evidenced by analyst reports.",
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 4,
+        "title": "Bear Key Arguments",
+        "type": "array"
+      },
+      "key_unresolved_tension": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "The most important signal conflict that neither side resolved. e.g. 'Technical model says LONG but Macro Analyst notes VIX just spiked AND oil dropped sharply \u2014 these conflict with the bullish quant call.' None if no significant tension detected.",
+        "title": "Key Unresolved Tension"
+      },
+      "quant_signal_preserved": {
+        "description": "True if the debate did not find compelling evidence to override the quant ensemble's direction. False if both researchers cited strong contextual evidence AGAINST the quant signal.",
+        "title": "Quant Signal Preserved",
+        "type": "boolean"
+      },
+      "quant_override_rationale": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "If quant_signal_preserved=False, explains what specific context (invisible to the numeric model) justifies caution about the quant signal.",
+        "title": "Quant Override Rationale"
+      },
+      "rounds_completed": {
+        "description": "Number of debate rounds completed.",
+        "minimum": 1,
+        "title": "Rounds Completed",
+        "type": "integer"
+      },
+      "debate_transcript": {
+        "description": "Full debate transcript \u2014 all rounds preserved for audit trail.",
+        "items": {
+          "$ref": "#/$defs/DebateRound"
+        },
+        "title": "Debate Transcript",
+        "type": "array"
+      },
+      "summary": {
+        "description": "Facilitator's structured verdict: which side won, key evidence, unresolved tensions, and whether the quant signal holds up under scrutiny.",
+        "maxLength": 300,
+        "title": "Summary",
+        "type": "string"
+      }
+    },
+    "required": [
+      "stronger_side",
+      "confidence_in_verdict",
+      "bull_key_arguments",
+      "bear_key_arguments",
+      "quant_signal_preserved",
+      "rounds_completed",
+      "debate_transcript",
+      "summary"
+    ],
+    "title": "DebateSummary",
+    "type": "object"
+  },
+  "TraderProposal": {
+    "$defs": {
+      "TradeDirection": {
+        "description": "Final trade direction output.",
+        "enum": [
+          "LONG",
+          "SHORT",
+          "HOLD"
+        ],
+        "title": "TradeDirection",
+        "type": "string"
+      }
+    },
+    "description": "Output of the Trader Agent.\n\nSynthesises: quant ensemble signal + debate summary + SL/TP/sizing constraints.\nThis is a PROPOSAL \u2014 it goes to the Risk Management team next.\nThe Fund Manager is the only agent whose output triggers actual decisions.",
+    "properties": {
+      "direction": {
+        "$ref": "#/$defs/TradeDirection",
+        "description": "Proposed trade direction: LONG, SHORT, or HOLD."
+      },
+      "confidence_score": {
+        "description": "Trader's composite confidence score (0\u20131). Inputs: quant prob + debate verdict strength + analyst consensus + absence of signal conflicts.",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "title": "Confidence Score",
+        "type": "number"
+      },
+      "proposed_sl_pips": {
+        "description": "Proposed stop-loss distance in pips. Must respect MIN_PIPS=100 and MAX_PIPS=500 cap from step3b_position_sizing.py.",
+        "minimum": 0.0,
+        "title": "Proposed Sl Pips",
+        "type": "number"
+      },
+      "proposed_tp_pips": {
+        "description": "Proposed take-profit distance in pips. Target R:R >= 1:2.",
+        "minimum": 0.0,
+        "title": "Proposed Tp Pips",
+        "type": "number"
+      },
+      "proposed_lot_size": {
+        "description": "Proposed lot size based on $50 risk budget and sl_pips. Must align with step3b_position_sizing.py formula.",
+        "minimum": 0.0,
+        "title": "Proposed Lot Size",
+        "type": "number"
+      },
+      "implied_rr_ratio": {
+        "description": "Implied Risk:Reward ratio (tp_pips / sl_pips). Target >= 2.0.",
+        "minimum": 0.0,
+        "title": "Implied Rr Ratio",
+        "type": "number"
+      },
+      "quant_signal_in": {
+        "description": "The quant ensemble's signal that was passed into this agent.",
+        "title": "Quant Signal In",
+        "type": "string"
+      },
+      "quant_prob_up": {
+        "description": "The quant ensemble's UP probability passed into this agent.",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "title": "Quant Prob Up",
+        "type": "number"
+      },
+      "quant_signal_override": {
+        "description": "True if the Trader is proposing a direction DIFFERENT from the quant signal. This should be RARE and requires explicit override_rationale.",
+        "title": "Quant Signal Override",
+        "type": "boolean"
+      },
+      "override_rationale": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "If quant_signal_override=True: the specific agent-layer evidence that justifies deviating from the quant model's direction.",
+        "title": "Override Rationale"
+      },
+      "synthesis_basis": {
+        "description": "Key inputs that drove this proposal. e.g. ['Quant: LONG (prob_up=0.73)', 'Macro: oil shock active, VIX rising \u2014 both bullish', 'Debate: Bull side stronger, no unresolved tensions', 'Calendar: FOMC in 6h \u2014 moderate caution applied'].",
+        "items": {
+          "type": "string"
+        },
+        "title": "Synthesis Basis",
+        "type": "array"
+      },
+      "rationale": {
+        "description": "Natural-language rationale for the proposal. Must explicitly reference the quant signal, debate verdict, and any analyst conflicts. This is the primary explainability output.",
+        "maxLength": 400,
+        "title": "Rationale",
+        "type": "string"
+      }
+    },
+    "required": [
+      "direction",
+      "confidence_score",
+      "proposed_sl_pips",
+      "proposed_tp_pips",
+      "proposed_lot_size",
+      "implied_rr_ratio",
+      "quant_signal_in",
+      "quant_prob_up",
+      "quant_signal_override",
+      "synthesis_basis",
+      "rationale"
+    ],
+    "title": "TraderProposal",
+    "type": "object"
+  },
+  "RiskAssessment": {
+    "$defs": {
+      "RiskAgentType": {
+        "description": "Identity of each risk management agent.",
+        "enum": [
+          "RISKY",
+          "SAFE",
+          "NEUTRAL"
+        ],
+        "title": "RiskAgentType",
+        "type": "string"
+      },
+      "TradeDirection": {
+        "description": "Final trade direction output.",
+        "enum": [
+          "LONG",
+          "SHORT",
+          "HOLD"
+        ],
+        "title": "TradeDirection",
+        "type": "string"
+      }
+    },
+    "description": "Output of one Risk Management agent (Risky / Safe / Neutral).\n\nThree instances are created per decision cycle and weighted by\nthe current market regime (CALM/HIGH_VOL/PANIC) as configured in .env.",
+    "properties": {
+      "agent_type": {
+        "$ref": "#/$defs/RiskAgentType",
+        "description": "Which risk perspective this agent represents."
+      },
+      "regime_weight": {
+        "description": "This agent's weight in the final risk consensus for the current regime. Configured via REGIME_WEIGHTS_* in .env.",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "title": "Regime Weight",
+        "type": "number"
+      },
+      "recommendation": {
+        "$ref": "#/$defs/TradeDirection",
+        "description": "This agent's recommendation: LONG, SHORT, or HOLD."
+      },
+      "size_adjustment_factor": {
+        "description": "Multiplier on the Trader's proposed lot size. 1.0 = take at full size. 0.5 = half size. 0.0 = reject (HOLD). Risky agent may suggest > 1.0 (up to 1.5x) in CALM regime.",
+        "maximum": 2.0,
+        "minimum": 0.0,
+        "title": "Size Adjustment Factor",
+        "type": "number"
+      },
+      "key_concerns": {
+        "description": "Primary risk factors this agent is flagging. e.g. ['FOMC in 3h \u2014 binary event risk', 'VIX spike suggests tail risk', 'Oil and quant signal conflict'].",
+        "items": {
+          "type": "string"
+        },
+        "title": "Key Concerns",
+        "type": "array"
+      },
+      "rationale": {
+        "description": "This agent's case for its recommendation and size adjustment. Natural language \u2014 this is where Risk team debate dialogue occurs.",
+        "maxLength": 300,
+        "title": "Rationale",
+        "type": "string"
+      }
+    },
+    "required": [
+      "agent_type",
+      "regime_weight",
+      "recommendation",
+      "size_adjustment_factor",
+      "rationale"
+    ],
+    "title": "RiskAssessment",
+    "type": "object"
+  },
+  "FundManagerDecision": {
+    "$defs": {
+      "FinalDecision": {
+        "description": "Fund Manager's gate decision.",
+        "enum": [
+          "APPROVE",
+          "REJECT",
+          "RESIZE"
+        ],
+        "title": "FinalDecision",
+        "type": "string"
+      },
+      "MarketRegime": {
+        "description": "Overall market regime used to weight the Risk Management team.\nCALM    \u2192 Risky agent gets more weight (configurable in .env)\nHIGH_VOL \u2192 Balanced weighting\nPANIC   \u2192 Safe/Conservative agent gets more weight",
+        "enum": [
+          "CALM",
+          "HIGH_VOL",
+          "PANIC"
+        ],
+        "title": "MarketRegime",
+        "type": "string"
+      },
+      "TradeDirection": {
+        "description": "Final trade direction output.",
+        "enum": [
+          "LONG",
+          "SHORT",
+          "HOLD"
+        ],
+        "title": "TradeDirection",
+        "type": "string"
+      }
+    },
+    "description": "Final gate output. The ONLY agent whose output can trigger an order.\n\nIn AGENT_SHADOW_MODE=true (default): logged to audit trail only.\nIn AGENT_SHADOW_MODE=false: returned via /api/agent-decision endpoint.\n\nReviews: TraderProposal + all three RiskAssessment objects + regime weights.",
+    "properties": {
+      "final_decision": {
+        "$ref": "#/$defs/FinalDecision",
+        "description": "APPROVE = take the Trader's proposal as-is. REJECT = do not trade (override to HOLD). RESIZE = trade but at a different lot size than proposed."
+      },
+      "final_direction": {
+        "$ref": "#/$defs/TradeDirection",
+        "description": "Final trade direction after Fund Manager review."
+      },
+      "final_lot_size": {
+        "description": "Final lot size. 0.0 if REJECT.",
+        "minimum": 0.0,
+        "title": "Final Lot Size",
+        "type": "number"
+      },
+      "final_sl_pips": {
+        "description": "Final stop-loss pips. 0.0 if REJECT.",
+        "minimum": 0.0,
+        "title": "Final Sl Pips",
+        "type": "number"
+      },
+      "final_tp_pips": {
+        "description": "Final take-profit pips. 0.0 if REJECT.",
+        "minimum": 0.0,
+        "title": "Final Tp Pips",
+        "type": "number"
+      },
+      "size_vs_proposal": {
+        "description": "How final size compares to proposal. e.g. 'APPROVED at full size', 'RESIZED to 60% of proposal', 'REJECTED'.",
+        "title": "Size Vs Proposal",
+        "type": "string"
+      },
+      "risk_team_consensus": {
+        "description": "Summary of weighted risk team outcome. e.g. 'Risky(0.5) + Neutral(0.3) + Safe(0.2) \u2192 weighted to PROCEED at 85% size'.",
+        "title": "Risk Team Consensus",
+        "type": "string"
+      },
+      "current_regime": {
+        "$ref": "#/$defs/MarketRegime",
+        "description": "Market regime at time of decision \u2014 determines risk agent weights."
+      },
+      "quant_signal_in": {
+        "description": "The quant ensemble signal that entered the agent pipeline.",
+        "title": "Quant Signal In",
+        "type": "string"
+      },
+      "quant_prob_up": {
+        "description": "The quant ensemble UP probability that entered the pipeline.",
+        "maximum": 1.0,
+        "minimum": 0.0,
+        "title": "Quant Prob Up",
+        "type": "number"
+      },
+      "agent_consensus": {
+        "description": "High-level summary of agent consensus. e.g. 'All analysts bullish, debate bull-side stronger, risk team cautious due to FOMC'.",
+        "title": "Agent Consensus",
+        "type": "string"
+      },
+      "full_reasoning": {
+        "description": "Fund Manager's complete reasoning chain: quant signal \u2192 analyst consensus \u2192 debate outcome \u2192 risk team weighting \u2192 final call. This is the primary audit-trail narrative.",
+        "maxLength": 600,
+        "title": "Full Reasoning",
+        "type": "string"
+      },
+      "shadow_mode": {
+        "description": "True if this decision was produced in shadow/paper-trading mode (logged only, no real order). False = live mode.",
+        "title": "Shadow Mode",
+        "type": "boolean"
+      },
+      "timestamp_utc": {
+        "description": "ISO 8601 UTC timestamp of this decision.",
+        "title": "Timestamp Utc",
+        "type": "string"
+      },
+      "session_id": {
+        "description": "Unique session identifier linking all agent reports for this decision cycle.",
+        "title": "Session Id",
+        "type": "string"
+      }
+    },
+    "required": [
+      "final_decision",
+      "final_direction",
+      "final_lot_size",
+      "final_sl_pips",
+      "final_tp_pips",
+      "size_vs_proposal",
+      "risk_team_consensus",
+      "current_regime",
+      "quant_signal_in",
+      "quant_prob_up",
+      "agent_consensus",
+      "full_reasoning",
+      "shadow_mode",
+      "timestamp_utc",
+      "session_id"
+    ],
+    "title": "FundManagerDecision",
+    "type": "object"
+  },
+  "AgentSessionLog": {
+    "$defs": {
+      "AgentCallMetadata": {
+        "description": "Token usage and latency metadata for a single LLM API call.",
+        "properties": {
+          "agent_name": {
+            "title": "Agent Name",
+            "type": "string"
+          },
+          "model_used": {
+            "title": "Model Used",
+            "type": "string"
+          },
+          "input_tokens": {
+            "minimum": 0,
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "output_tokens": {
+            "minimum": 0,
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "latency_ms": {
+            "minimum": 0,
+            "title": "Latency Ms",
+            "type": "integer"
+          },
+          "cost_usd_estimate": {
+            "minimum": 0.0,
+            "title": "Cost Usd Estimate",
+            "type": "number"
+          }
+        },
+        "required": [
+          "agent_name",
+          "model_used",
+          "input_tokens",
+          "output_tokens",
+          "latency_ms",
+          "cost_usd_estimate"
+        ],
+        "title": "AgentCallMetadata",
+        "type": "object"
+      },
+      "CalendarAnalystReport": {
+        "description": "Output of the Event/Calendar Analyst agent.\n\nFlags proximity to scheduled high-volatility macro events.\nThis report directly influences the Risk Management team's caution level\n\u2014 a high caution_level shifts weight toward the Safe/Conservative agent.",
+        "properties": {
+          "event_window_active": {
+            "description": "True if a HIGH-impact event (NFP/FOMC/CPI) is within \u00b12 hours of now. This is the primary agent-layer activation trigger.",
+            "title": "Event Window Active",
+            "type": "boolean"
+          },
+          "volatility_flag": {
+            "$ref": "#/$defs/VolatilityFlag",
+            "description": "IMMINENT = HIGH event within 2h. APPROACHING = HIGH event within 24h. CLEAR = no HIGH event in next 24h."
+          },
+          "events_within_2h": {
+            "description": "List of HIGH-impact events within \u00b12 hours. Each dict: {'event': str, 'date': str, 'impact': str, 'hours_until': float}.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Events Within 2H",
+            "type": "array"
+          },
+          "events_within_24h": {
+            "description": "List of all tracked events (HIGH + MEDIUM) within the next 24 hours. Each dict: {'event': str, 'date': str, 'impact': str, 'hours_until': float}.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Events Within 24H",
+            "type": "array"
+          },
+          "caution_level": {
+            "description": "Caution level for Risk Management team weighting. 0 = CLEAR (no upcoming events). 1 = LOW (MEDIUM event within 24h). 2 = MEDIUM (HIGH event within 24h). 3 = HIGH (HIGH event within 2h \u2014 IMMINENT). Each +1 shifts Risk team weighting toward Safe agent.",
+            "maximum": 3,
+            "minimum": 0,
+            "title": "Caution Level",
+            "type": "integer"
+          },
+          "next_high_impact_event": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Name of the next HIGH-impact event and its ETA. e.g. 'US NFP (August) in 1.5h'.",
+            "title": "Next High Impact Event"
+          },
+          "summary": {
+            "description": "Structured summary of calendar state: active event window, upcoming events, and recommended caution level for Risk Manager.",
+            "maxLength": 200,
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_window_active",
+          "volatility_flag",
+          "caution_level",
+          "summary"
+        ],
+        "title": "CalendarAnalystReport",
+        "type": "object"
+      },
+      "DebateRound": {
+        "description": "A single round of the bull/bear debate (natural language \u2014 not structured).",
+        "properties": {
+          "round_number": {
+            "description": "Debate round index (1-based).",
+            "minimum": 1,
+            "title": "Round Number",
+            "type": "integer"
+          },
+          "bull_argument": {
+            "description": "Bullish researcher's argument for this round. Natural language. Must cite specific fields from analyst reports, not generic commentary. May NOT claim the quant ensemble is wrong \u2014 only cite context the model cannot see.",
+            "title": "Bull Argument",
+            "type": "string"
+          },
+          "bear_argument": {
+            "description": "Bearish researcher's argument for this round. Natural language. Must cite specific fields from analyst reports, not generic commentary. May NOT claim the quant ensemble is wrong \u2014 only cite context the model cannot see.",
+            "title": "Bear Argument",
+            "type": "string"
+          }
+        },
+        "required": [
+          "round_number",
+          "bull_argument",
+          "bear_argument"
+        ],
+        "title": "DebateRound",
+        "type": "object"
+      },
+      "DebateSide": {
+        "description": "Which side won the bull/bear debate.",
+        "enum": [
+          "BULL",
+          "BEAR",
+          "TIED"
+        ],
+        "title": "DebateSide",
+        "type": "string"
+      },
+      "DebateSummary": {
+        "description": "Output of the Debate Facilitator agent.\n\nReviews the full debate transcript and produces a structured verdict.\nThis summary is passed to the Trader Agent \u2014 it does NOT override\nthe quant ensemble's core probability signal.",
+        "properties": {
+          "stronger_side": {
+            "$ref": "#/$defs/DebateSide",
+            "description": "Which side's case was better supported by the analyst evidence."
+          },
+          "confidence_in_verdict": {
+            "$ref": "#/$defs/SignalStrength",
+            "description": "Facilitator's confidence in the verdict. WEAK = debate was close."
+          },
+          "bull_key_arguments": {
+            "description": "Top 2\u20134 bullish arguments that were well-evidenced by analyst reports.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 4,
+            "title": "Bull Key Arguments",
+            "type": "array"
+          },
+          "bear_key_arguments": {
+            "description": "Top 2\u20134 bearish arguments that were well-evidenced by analyst reports.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 4,
+            "title": "Bear Key Arguments",
+            "type": "array"
+          },
+          "key_unresolved_tension": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The most important signal conflict that neither side resolved. e.g. 'Technical model says LONG but Macro Analyst notes VIX just spiked AND oil dropped sharply \u2014 these conflict with the bullish quant call.' None if no significant tension detected.",
+            "title": "Key Unresolved Tension"
+          },
+          "quant_signal_preserved": {
+            "description": "True if the debate did not find compelling evidence to override the quant ensemble's direction. False if both researchers cited strong contextual evidence AGAINST the quant signal.",
+            "title": "Quant Signal Preserved",
+            "type": "boolean"
+          },
+          "quant_override_rationale": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "If quant_signal_preserved=False, explains what specific context (invisible to the numeric model) justifies caution about the quant signal.",
+            "title": "Quant Override Rationale"
+          },
+          "rounds_completed": {
+            "description": "Number of debate rounds completed.",
+            "minimum": 1,
+            "title": "Rounds Completed",
+            "type": "integer"
+          },
+          "debate_transcript": {
+            "description": "Full debate transcript \u2014 all rounds preserved for audit trail.",
+            "items": {
+              "$ref": "#/$defs/DebateRound"
+            },
+            "title": "Debate Transcript",
+            "type": "array"
+          },
+          "summary": {
+            "description": "Facilitator's structured verdict: which side won, key evidence, unresolved tensions, and whether the quant signal holds up under scrutiny.",
+            "maxLength": 300,
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stronger_side",
+          "confidence_in_verdict",
+          "bull_key_arguments",
+          "bear_key_arguments",
+          "quant_signal_preserved",
+          "rounds_completed",
+          "debate_transcript",
+          "summary"
+        ],
+        "title": "DebateSummary",
+        "type": "object"
+      },
+      "DigestionWindow": {
+        "description": "Where we are in the ~5-trading-day shock digestion window (Chai et al. 2021).\nMarkets typically absorb oil/VIX/DXY shocks within 5 days.\nEARLY \u2192 shock occurred <2 days ago, still propagating\nMID   \u2192 2-3 days post-shock, partial digestion\nLATE  \u2192 4-5 days post-shock, nearly absorbed\nNONE  \u2192 no significant recent shock detected",
+        "enum": [
+          "EARLY",
+          "MID",
+          "LATE",
+          "NONE"
+        ],
+        "title": "DigestionWindow",
+        "type": "string"
+      },
+      "Direction": {
+        "description": "Primary directional bias.",
+        "enum": [
+          "BULLISH",
+          "BEARISH",
+          "NEUTRAL"
+        ],
+        "title": "Direction",
+        "type": "string"
+      },
+      "FinalDecision": {
+        "description": "Fund Manager's gate decision.",
+        "enum": [
+          "APPROVE",
+          "REJECT",
+          "RESIZE"
+        ],
+        "title": "FinalDecision",
+        "type": "string"
+      },
+      "FundManagerDecision": {
+        "description": "Final gate output. The ONLY agent whose output can trigger an order.\n\nIn AGENT_SHADOW_MODE=true (default): logged to audit trail only.\nIn AGENT_SHADOW_MODE=false: returned via /api/agent-decision endpoint.\n\nReviews: TraderProposal + all three RiskAssessment objects + regime weights.",
+        "properties": {
+          "final_decision": {
+            "$ref": "#/$defs/FinalDecision",
+            "description": "APPROVE = take the Trader's proposal as-is. REJECT = do not trade (override to HOLD). RESIZE = trade but at a different lot size than proposed."
+          },
+          "final_direction": {
+            "$ref": "#/$defs/TradeDirection",
+            "description": "Final trade direction after Fund Manager review."
+          },
+          "final_lot_size": {
+            "description": "Final lot size. 0.0 if REJECT.",
+            "minimum": 0.0,
+            "title": "Final Lot Size",
+            "type": "number"
+          },
+          "final_sl_pips": {
+            "description": "Final stop-loss pips. 0.0 if REJECT.",
+            "minimum": 0.0,
+            "title": "Final Sl Pips",
+            "type": "number"
+          },
+          "final_tp_pips": {
+            "description": "Final take-profit pips. 0.0 if REJECT.",
+            "minimum": 0.0,
+            "title": "Final Tp Pips",
+            "type": "number"
+          },
+          "size_vs_proposal": {
+            "description": "How final size compares to proposal. e.g. 'APPROVED at full size', 'RESIZED to 60% of proposal', 'REJECTED'.",
+            "title": "Size Vs Proposal",
+            "type": "string"
+          },
+          "risk_team_consensus": {
+            "description": "Summary of weighted risk team outcome. e.g. 'Risky(0.5) + Neutral(0.3) + Safe(0.2) \u2192 weighted to PROCEED at 85% size'.",
+            "title": "Risk Team Consensus",
+            "type": "string"
+          },
+          "current_regime": {
+            "$ref": "#/$defs/MarketRegime",
+            "description": "Market regime at time of decision \u2014 determines risk agent weights."
+          },
+          "quant_signal_in": {
+            "description": "The quant ensemble signal that entered the agent pipeline.",
+            "title": "Quant Signal In",
+            "type": "string"
+          },
+          "quant_prob_up": {
+            "description": "The quant ensemble UP probability that entered the pipeline.",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Quant Prob Up",
+            "type": "number"
+          },
+          "agent_consensus": {
+            "description": "High-level summary of agent consensus. e.g. 'All analysts bullish, debate bull-side stronger, risk team cautious due to FOMC'.",
+            "title": "Agent Consensus",
+            "type": "string"
+          },
+          "full_reasoning": {
+            "description": "Fund Manager's complete reasoning chain: quant signal \u2192 analyst consensus \u2192 debate outcome \u2192 risk team weighting \u2192 final call. This is the primary audit-trail narrative.",
+            "maxLength": 600,
+            "title": "Full Reasoning",
+            "type": "string"
+          },
+          "shadow_mode": {
+            "description": "True if this decision was produced in shadow/paper-trading mode (logged only, no real order). False = live mode.",
+            "title": "Shadow Mode",
+            "type": "boolean"
+          },
+          "timestamp_utc": {
+            "description": "ISO 8601 UTC timestamp of this decision.",
+            "title": "Timestamp Utc",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Unique session identifier linking all agent reports for this decision cycle.",
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "final_decision",
+          "final_direction",
+          "final_lot_size",
+          "final_sl_pips",
+          "final_tp_pips",
+          "size_vs_proposal",
+          "risk_team_consensus",
+          "current_regime",
+          "quant_signal_in",
+          "quant_prob_up",
+          "agent_consensus",
+          "full_reasoning",
+          "shadow_mode",
+          "timestamp_utc",
+          "session_id"
+        ],
+        "title": "FundManagerDecision",
+        "type": "object"
+      },
+      "GoldDriver": {
+        "description": "Dominant macro driver per Chai et al. 2021 SVAR analysis.\nOIL  \u2192 crude oil returns explain ~89% of gold forecast error variance\nVIX  \u2192 rising VIX is bullish for gold (4%\u21927.5% of variance over 10 periods)\nDXY  \u2192 negative but weak relationship (~0.5% of variance) \u2014 do NOT overweight\nMIXED \u2192 multiple drivers active simultaneously",
+        "enum": [
+          "OIL",
+          "VIX",
+          "DXY",
+          "MIXED",
+          "NONE"
+        ],
+        "title": "GoldDriver",
+        "type": "string"
+      },
+      "MacroAnalystReport": {
+        "description": "Output of the Macro/Fundamental Analyst agent.\n\nCRITICAL: This agent's reasoning is GROUNDED in the quantified relationships\nfrom Chai et al. 2021's SVAR analysis on gold price drivers:\n\n  1. Crude oil returns explain ~89% of gold's forecast error variance\n     \u2192 Oil price shocks are the DOMINANT driver. Weight heavily.\n\n  2. VIX has a positive, growing relationship with gold returns\n     (rises from ~4% to ~7.5% of variance over 10 periods)\n     \u2192 Rising VIX = bullish for gold.\n\n  3. DXY (USD index) has a NEGATIVE but WEAK relationship (~0.5% of variance)\n     \u2192 Do NOT let this agent overweight dollar moves.\n\n  4. All shocks are digested within ~5 trading days\n     \u2192 Always flag early/mid/late digestion window for any recent shock.",
+        "properties": {
+          "macro_bias": {
+            "$ref": "#/$defs/Direction",
+            "description": "Overall macro directional bias for gold based on current driver state."
+          },
+          "bias_strength": {
+            "$ref": "#/$defs/SignalStrength",
+            "description": "Conviction behind the macro bias \u2014 reflects clarity of dominant driver signal."
+          },
+          "dominant_driver": {
+            "$ref": "#/$defs/GoldDriver",
+            "description": "Dominant macro driver currently active per Chai et al. 2021 variance decomposition. OIL = crude oil shock (89% variance weight). VIX = fear spike (4-7.5%). DXY = dollar move (0.5% \u2014 low weight). MIXED = multiple active."
+          },
+          "oil_return_5d": {
+            "description": "Crude oil 5-day return (%). Positive = oil up = bullish gold signal.",
+            "title": "Oil Return 5D",
+            "type": "number"
+          },
+          "oil_shock_active": {
+            "description": "True if crude oil moved >3% in the last 5 trading days, triggering the dominant SVAR channel.",
+            "title": "Oil Shock Active",
+            "type": "boolean"
+          },
+          "oil_shock_direction": {
+            "$ref": "#/$defs/Direction",
+            "description": "Direction of the oil shock if active, else NEUTRAL."
+          },
+          "vix_level": {
+            "description": "Current VIX level.",
+            "minimum": 0.0,
+            "title": "Vix Level",
+            "type": "number"
+          },
+          "vix_direction": {
+            "$ref": "#/$defs/Direction",
+            "description": "VIX trend direction over the past 5 days. BULLISH = VIX rising (bullish for gold). BEARISH = VIX falling."
+          },
+          "vix_above_panic": {
+            "description": "True if VIX > 25 (PANIC regime threshold).",
+            "title": "Vix Above Panic",
+            "type": "boolean"
+          },
+          "dxy_level": {
+            "description": "Current DXY (USD index) level.",
+            "title": "Dxy Level",
+            "type": "number"
+          },
+          "dxy_direction": {
+            "$ref": "#/$defs/Direction",
+            "description": "DXY trend. BEARISH = dollar weakening (mildly bullish for gold). Note: DXY explains only ~0.5% of gold variance \u2014 do not overweight."
+          },
+          "dxy_impact_weight": {
+            "default": "LOW (~0.5% variance per Chai et al. 2021)",
+            "description": "Explicit reminder of DXY's limited explanatory power for this agent.",
+            "title": "Dxy Impact Weight",
+            "type": "string"
+          },
+          "digestion_window_status": {
+            "$ref": "#/$defs/DigestionWindow",
+            "description": "Position in the ~5-day shock digestion window (Chai et al. 2021). EARLY (<2d since shock): still propagating. MID (2-3d): partial. LATE (4-5d): nearly absorbed. NONE: no recent significant shock."
+          },
+          "days_since_last_shock": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Number of trading days since the last significant macro shock (if any).",
+            "title": "Days Since Last Shock"
+          },
+          "chai_2021_narrative": {
+            "description": "Explicit reference to which Chai et al. 2021 relationship is currently dominant and how it maps to the current macro state. Must name the specific SVAR finding.",
+            "maxLength": 300,
+            "title": "Chai 2021 Narrative",
+            "type": "string"
+          },
+          "summary": {
+            "description": "~150-word structured macro summary with explicit reference to which Chai et al. 2021 driver relationship is dominant. No generic macro commentary.",
+            "maxLength": 200,
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "macro_bias",
+          "bias_strength",
+          "dominant_driver",
+          "oil_return_5d",
+          "oil_shock_active",
+          "oil_shock_direction",
+          "vix_level",
+          "vix_direction",
+          "vix_above_panic",
+          "dxy_level",
+          "dxy_direction",
+          "digestion_window_status",
+          "chai_2021_narrative",
+          "summary"
+        ],
+        "title": "MacroAnalystReport",
+        "type": "object"
+      },
+      "MarketRegime": {
+        "description": "Overall market regime used to weight the Risk Management team.\nCALM    \u2192 Risky agent gets more weight (configurable in .env)\nHIGH_VOL \u2192 Balanced weighting\nPANIC   \u2192 Safe/Conservative agent gets more weight",
+        "enum": [
+          "CALM",
+          "HIGH_VOL",
+          "PANIC"
+        ],
+        "title": "MarketRegime",
+        "type": "string"
+      },
+      "RiskAgentType": {
+        "description": "Identity of each risk management agent.",
+        "enum": [
+          "RISKY",
+          "SAFE",
+          "NEUTRAL"
+        ],
+        "title": "RiskAgentType",
+        "type": "string"
+      },
+      "RiskAssessment": {
+        "description": "Output of one Risk Management agent (Risky / Safe / Neutral).\n\nThree instances are created per decision cycle and weighted by\nthe current market regime (CALM/HIGH_VOL/PANIC) as configured in .env.",
+        "properties": {
+          "agent_type": {
+            "$ref": "#/$defs/RiskAgentType",
+            "description": "Which risk perspective this agent represents."
+          },
+          "regime_weight": {
+            "description": "This agent's weight in the final risk consensus for the current regime. Configured via REGIME_WEIGHTS_* in .env.",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Regime Weight",
+            "type": "number"
+          },
+          "recommendation": {
+            "$ref": "#/$defs/TradeDirection",
+            "description": "This agent's recommendation: LONG, SHORT, or HOLD."
+          },
+          "size_adjustment_factor": {
+            "description": "Multiplier on the Trader's proposed lot size. 1.0 = take at full size. 0.5 = half size. 0.0 = reject (HOLD). Risky agent may suggest > 1.0 (up to 1.5x) in CALM regime.",
+            "maximum": 2.0,
+            "minimum": 0.0,
+            "title": "Size Adjustment Factor",
+            "type": "number"
+          },
+          "key_concerns": {
+            "description": "Primary risk factors this agent is flagging. e.g. ['FOMC in 3h \u2014 binary event risk', 'VIX spike suggests tail risk', 'Oil and quant signal conflict'].",
+            "items": {
+              "type": "string"
+            },
+            "title": "Key Concerns",
+            "type": "array"
+          },
+          "rationale": {
+            "description": "This agent's case for its recommendation and size adjustment. Natural language \u2014 this is where Risk team debate dialogue occurs.",
+            "maxLength": 300,
+            "title": "Rationale",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_type",
+          "regime_weight",
+          "recommendation",
+          "size_adjustment_factor",
+          "rationale"
+        ],
+        "title": "RiskAssessment",
+        "type": "object"
+      },
+      "SentimentAnalystReport": {
+        "description": "Output of the News/Sentiment Analyst agent.\n\nSynthesises FinBERT historical scores, live VADER scores, and\nGDELT event categories into a structured sentiment state.",
+        "properties": {
+          "sentiment_direction": {
+            "$ref": "#/$defs/Direction",
+            "description": "Overall sentiment direction for gold based on news flow."
+          },
+          "sentiment_intensity": {
+            "$ref": "#/$defs/SignalStrength",
+            "description": "Intensity of the sentiment signal. STRONG = scores far from neutral. WEAK = scores near zero. MODERATE = between."
+          },
+          "finbert_score": {
+            "description": "FinBERT mean sentiment score from historical news_sentiment_cache.csv (positive = bullish gold, negative = bearish gold).",
+            "maximum": 1.0,
+            "minimum": -1.0,
+            "title": "Finbert Score",
+            "type": "number"
+          },
+          "vader_score": {
+            "description": "Live VADER compound score (gold-context lexicon enhanced). Range -1 to +1.",
+            "maximum": 1.0,
+            "minimum": -1.0,
+            "title": "Vader Score",
+            "type": "number"
+          },
+          "blended_score": {
+            "description": "Blended sentiment: 70% FinBERT (historical) + 30% VADER (live). Matches the blend used in step11_api_server.py.",
+            "maximum": 1.0,
+            "minimum": -1.0,
+            "title": "Blended Score",
+            "type": "number"
+          },
+          "active_gdelt_categories": {
+            "description": "List of GDELT event categories detected in the past 4 hours. e.g. ['WAR_GEOPOLITICAL', 'FED_POLICY']. Categories: WAR_MILITARY, FED_POLICY, INFLATION, DOLLAR_FX, CRISIS, ENERGY, GOLD_MARKET.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Active Gdelt Categories",
+            "type": "array"
+          },
+          "high_impact_event_active": {
+            "description": "True if WAR_MILITARY or FED_POLICY category is currently active in GDELT \u2014 these are the two highest-impact categories for gold per historical analysis.",
+            "title": "High Impact Event Active",
+            "type": "boolean"
+          },
+          "war_geopolitical_active": {
+            "description": "True if WAR_MILITARY GDELT category is active \u2014 triggers PANIC regime.",
+            "title": "War Geopolitical Active",
+            "type": "boolean"
+          },
+          "headline_sample": {
+            "description": "Up to 5 most relevant recent headlines (source of the sentiment reading).",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "Headline Sample",
+            "type": "array"
+          },
+          "news_volume_24h": {
+            "description": "Number of gold-relevant news articles processed in the last 24 hours.",
+            "minimum": 0,
+            "title": "News Volume 24H",
+            "type": "integer"
+          },
+          "summary": {
+            "description": "~150-word structured summary: sentiment direction, intensity, active GDELT categories, and whether any high-impact event category is live.",
+            "maxLength": 200,
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sentiment_direction",
+          "sentiment_intensity",
+          "finbert_score",
+          "vader_score",
+          "blended_score",
+          "high_impact_event_active",
+          "war_geopolitical_active",
+          "headline_sample",
+          "news_volume_24h",
+          "summary"
+        ],
+        "title": "SentimentAnalystReport",
+        "type": "object"
+      },
+      "SignalStrength": {
+        "description": "Conviction level for a directional call.",
+        "enum": [
+          "STRONG",
+          "MODERATE",
+          "WEAK"
+        ],
+        "title": "SignalStrength",
+        "type": "string"
+      },
+      "TechnicalAnalystReport": {
+        "description": "Output of the Technical Analyst agent.\n\nCovers trend direction, momentum, volatility regime, and the quant\nensemble's raw probability output. This is the bridge between the\nexisting CatBoost/XGBoost/LightGBM pipeline and the agent layer.",
+        "properties": {
+          "trend_direction": {
+            "$ref": "#/$defs/Direction",
+            "description": "Overall trend direction based on EMA alignment and price action."
+          },
+          "ema_alignment": {
+            "description": "EMA alignment state. e.g. 'EMA9 > EMA21 > EMA50 (bullish stack)' or 'price below all EMAs (bearish)'.",
+            "title": "Ema Alignment",
+            "type": "string"
+          },
+          "momentum_state": {
+            "description": "MACD momentum description. e.g. 'MACD line crossed above signal \u2014 bullish momentum building' or 'MACD histogram shrinking \u2014 momentum fading'.",
+            "title": "Momentum State",
+            "type": "string"
+          },
+          "macd_crossover": {
+            "description": "True if a MACD signal-line crossover occurred in the last 3 bars.",
+            "title": "Macd Crossover",
+            "type": "boolean"
+          },
+          "volatility_regime": {
+            "$ref": "#/$defs/VolatilityRegime",
+            "description": "Current volatility regime based on ATR relative to 20-day average ATR."
+          },
+          "bb_squeeze": {
+            "description": "True if Bollinger Bands are in a squeeze (bandwidth below 20-day average), indicating a potential breakout setup.",
+            "title": "Bb Squeeze",
+            "type": "boolean"
+          },
+          "bb_position": {
+            "description": "Price position within Bollinger Bands. e.g. 'price at upper band (87th percentile)' or 'price near middle band'.",
+            "title": "Bb Position",
+            "type": "string"
+          },
+          "rsi_value": {
+            "description": "Current RSI(14) value.",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Rsi Value",
+            "type": "number"
+          },
+          "rsi_overbought": {
+            "description": "True if RSI > 70.",
+            "title": "Rsi Overbought",
+            "type": "boolean"
+          },
+          "rsi_oversold": {
+            "description": "True if RSI < 30.",
+            "title": "Rsi Oversold",
+            "type": "boolean"
+          },
+          "quant_prob_up": {
+            "description": "Ensemble meta-learner probability of price going UP (CatBoost/XGB/LGB mean).",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Quant Prob Up",
+            "type": "number"
+          },
+          "quant_signal": {
+            "description": "Raw quant signal string. e.g. 'LONG (BUY)', 'SHORT (SELL)', 'HOLD'.",
+            "title": "Quant Signal",
+            "type": "string"
+          },
+          "quant_consensus": {
+            "description": "True if at least 2/3 base models agree on direction (consensus gate passed).",
+            "title": "Quant Consensus",
+            "type": "boolean"
+          },
+          "confidence_score": {
+            "description": "Technical analyst's composite confidence score (0\u20131). Derived from: signal strength + momentum alignment + volatility regime + RSI state.",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence Score",
+            "type": "number"
+          },
+          "signal_conflicts": {
+            "description": "List of detected conflicts between indicators. e.g. ['Quant says LONG but RSI is overbought (77)', 'BB squeeze active \u2014 breakout direction uncertain'].",
+            "items": {
+              "type": "string"
+            },
+            "title": "Signal Conflicts",
+            "type": "array"
+          },
+          "summary": {
+            "description": "Concise ~150-word structured narrative covering trend, momentum, volatility regime, and quant signal alignment. No free-form speculation.",
+            "maxLength": 200,
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trend_direction",
+          "ema_alignment",
+          "momentum_state",
+          "macd_crossover",
+          "volatility_regime",
+          "bb_squeeze",
+          "bb_position",
+          "rsi_value",
+          "rsi_overbought",
+          "rsi_oversold",
+          "quant_prob_up",
+          "quant_signal",
+          "quant_consensus",
+          "confidence_score",
+          "summary"
+        ],
+        "title": "TechnicalAnalystReport",
+        "type": "object"
+      },
+      "TradeDirection": {
+        "description": "Final trade direction output.",
+        "enum": [
+          "LONG",
+          "SHORT",
+          "HOLD"
+        ],
+        "title": "TradeDirection",
+        "type": "string"
+      },
+      "TraderProposal": {
+        "description": "Output of the Trader Agent.\n\nSynthesises: quant ensemble signal + debate summary + SL/TP/sizing constraints.\nThis is a PROPOSAL \u2014 it goes to the Risk Management team next.\nThe Fund Manager is the only agent whose output triggers actual decisions.",
+        "properties": {
+          "direction": {
+            "$ref": "#/$defs/TradeDirection",
+            "description": "Proposed trade direction: LONG, SHORT, or HOLD."
+          },
+          "confidence_score": {
+            "description": "Trader's composite confidence score (0\u20131). Inputs: quant prob + debate verdict strength + analyst consensus + absence of signal conflicts.",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence Score",
+            "type": "number"
+          },
+          "proposed_sl_pips": {
+            "description": "Proposed stop-loss distance in pips. Must respect MIN_PIPS=100 and MAX_PIPS=500 cap from step3b_position_sizing.py.",
+            "minimum": 0.0,
+            "title": "Proposed Sl Pips",
+            "type": "number"
+          },
+          "proposed_tp_pips": {
+            "description": "Proposed take-profit distance in pips. Target R:R >= 1:2.",
+            "minimum": 0.0,
+            "title": "Proposed Tp Pips",
+            "type": "number"
+          },
+          "proposed_lot_size": {
+            "description": "Proposed lot size based on $50 risk budget and sl_pips. Must align with step3b_position_sizing.py formula.",
+            "minimum": 0.0,
+            "title": "Proposed Lot Size",
+            "type": "number"
+          },
+          "implied_rr_ratio": {
+            "description": "Implied Risk:Reward ratio (tp_pips / sl_pips). Target >= 2.0.",
+            "minimum": 0.0,
+            "title": "Implied Rr Ratio",
+            "type": "number"
+          },
+          "quant_signal_in": {
+            "description": "The quant ensemble's signal that was passed into this agent.",
+            "title": "Quant Signal In",
+            "type": "string"
+          },
+          "quant_prob_up": {
+            "description": "The quant ensemble's UP probability passed into this agent.",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Quant Prob Up",
+            "type": "number"
+          },
+          "quant_signal_override": {
+            "description": "True if the Trader is proposing a direction DIFFERENT from the quant signal. This should be RARE and requires explicit override_rationale.",
+            "title": "Quant Signal Override",
+            "type": "boolean"
+          },
+          "override_rationale": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "If quant_signal_override=True: the specific agent-layer evidence that justifies deviating from the quant model's direction.",
+            "title": "Override Rationale"
+          },
+          "synthesis_basis": {
+            "description": "Key inputs that drove this proposal. e.g. ['Quant: LONG (prob_up=0.73)', 'Macro: oil shock active, VIX rising \u2014 both bullish', 'Debate: Bull side stronger, no unresolved tensions', 'Calendar: FOMC in 6h \u2014 moderate caution applied'].",
+            "items": {
+              "type": "string"
+            },
+            "title": "Synthesis Basis",
+            "type": "array"
+          },
+          "rationale": {
+            "description": "Natural-language rationale for the proposal. Must explicitly reference the quant signal, debate verdict, and any analyst conflicts. This is the primary explainability output.",
+            "maxLength": 400,
+            "title": "Rationale",
+            "type": "string"
+          }
+        },
+        "required": [
+          "direction",
+          "confidence_score",
+          "proposed_sl_pips",
+          "proposed_tp_pips",
+          "proposed_lot_size",
+          "implied_rr_ratio",
+          "quant_signal_in",
+          "quant_prob_up",
+          "quant_signal_override",
+          "synthesis_basis",
+          "rationale"
+        ],
+        "title": "TraderProposal",
+        "type": "object"
+      },
+      "VolatilityFlag": {
+        "description": "Calendar event proximity flag for the Calendar Analyst.",
+        "enum": [
+          "IMMINENT",
+          "APPROACHING",
+          "CLEAR"
+        ],
+        "title": "VolatilityFlag",
+        "type": "string"
+      },
+      "VolatilityRegime": {
+        "description": "Market volatility classification.",
+        "enum": [
+          "LOW",
+          "NORMAL",
+          "HIGH",
+          "EXTREME"
+        ],
+        "title": "VolatilityRegime",
+        "type": "string"
+      }
+    },
+    "description": "Complete audit trail for one decision cycle.\nLogged to agents_audit.db and agents_log/YYYY-MM-DD_HH-MM_<session_id>.jsonl.\n\nEvery agent's full report and reasoning is preserved here \u2014 this is the\nexplainability benefit the TradingAgents paper highlights over black-box models.",
+    "properties": {
+      "session_id": {
+        "title": "Session Id",
+        "type": "string"
+      },
+      "timestamp_utc": {
+        "title": "Timestamp Utc",
+        "type": "string"
+      },
+      "trigger_reason": {
+        "description": "Why the agent layer activated. e.g. 'US NFP (August) in 1.2h' or 'WAR_MILITARY GDELT event detected'.",
+        "title": "Trigger Reason",
+        "type": "string"
+      },
+      "technical_report": {
+        "$ref": "#/$defs/TechnicalAnalystReport"
+      },
+      "macro_report": {
+        "$ref": "#/$defs/MacroAnalystReport"
+      },
+      "sentiment_report": {
+        "$ref": "#/$defs/SentimentAnalystReport"
+      },
+      "calendar_report": {
+        "$ref": "#/$defs/CalendarAnalystReport"
+      },
+      "debate_summary": {
+        "$ref": "#/$defs/DebateSummary"
+      },
+      "trader_proposal": {
+        "$ref": "#/$defs/TraderProposal"
+      },
+      "risk_assessments": {
+        "description": "All three risk agent assessments (RISKY, SAFE, NEUTRAL).",
+        "items": {
+          "$ref": "#/$defs/RiskAssessment"
+        },
+        "title": "Risk Assessments",
+        "type": "array"
+      },
+      "market_regime": {
+        "$ref": "#/$defs/MarketRegime"
+      },
+      "fund_manager_decision": {
+        "$ref": "#/$defs/FundManagerDecision"
+      },
+      "actual_next_day_direction": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Filled in after the fact: actual gold price direction next session. Used for shadow-mode performance comparison vs quant baseline.",
+        "title": "Actual Next Day Direction"
+      },
+      "quant_baseline_correct": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Whether the pure quant signal was correct for this event window.",
+        "title": "Quant Baseline Correct"
+      },
+      "agent_decision_correct": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "description": "Whether the Fund Manager's final decision was correct.",
+        "title": "Agent Decision Correct"
+      },
+      "api_calls": {
+        "description": "Per-agent LLM call metadata for cost tracking.",
+        "items": {
+          "$ref": "#/$defs/AgentCallMetadata"
+        },
+        "title": "Api Calls",
+        "type": "array"
+      },
+      "total_cost_usd": {
+        "default": 0.0,
+        "description": "Total estimated API cost for this decision cycle (USD).",
+        "title": "Total Cost Usd",
+        "type": "number"
+      },
+      "total_latency_ms": {
+        "default": 0,
+        "description": "Wall-clock time for the full pipeline execution (ms).",
+        "title": "Total Latency Ms",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "session_id",
+      "timestamp_utc",
+      "trigger_reason",
+      "technical_report",
+      "macro_report",
+      "sentiment_report",
+      "calendar_report",
+      "debate_summary",
+      "trader_proposal",
+      "risk_assessments",
+      "market_regime",
+      "fund_manager_decision"
+    ],
+    "title": "AgentSessionLog",
+    "type": "object"
+  }
+}

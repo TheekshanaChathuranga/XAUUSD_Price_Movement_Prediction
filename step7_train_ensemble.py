@@ -1,14 +1,14 @@
 """
-Phase 12: Optimal Ensemble — CatBoost + XGBoost + LightGBM Voting
-===================================================================
-Changes vs previous version:
-  ✓ CONFIDENCE_BAND raised from 0.60 → 0.65 for higher win rate
-  ✓ Ensemble consensus filter: all 3 models must agree
-  ✓ Volatility regime gate: skip extreme-vol days
-  ✓ RSI confirmation gate built into Signal column
-  ✓ Fixed test_dates slice (val_size not val_n)
-  ✓ use_label_encoder removed (deprecated in XGBoost >= 1.6)
-  ✓ More Optuna trials (50) for better hyperparameter search
+Phase 12 Enhanced v2: Optimal Ensemble — CatBoost + XGBoost + LightGBM
+========================================================================
+Changes in v2 (paper-driven win-rate upgrades):
+  ✓ 5-day purge embargo between train/test chunks (Chai et al. macro digestion)
+  ✓ Rolling-origin expanding TSCV with per-fold MCC/DA table (Arif et al.)
+  ✓ MCC + Directional Accuracy (DA) in all evaluation outputs (Dakalbab et al.)
+  ✓ Consensus + Compulsory-Agent signal aggregation replaces flat majority vote
+    (Hernes et al. A-Trader — MyStrategy was consistently worst performer)
+  ✓ Volatility regime made COMPULSORY veto (not just a vote)
+  ✓ RSI regime also compulsory veto on conflicting signals
 """
 import os, sys, json
 import numpy as np
@@ -16,13 +16,17 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (accuracy_score, precision_score, recall_score,
-                             f1_score, roc_auc_score)
+                             f1_score, roc_auc_score, matthews_corrcoef)
 from catboost  import CatBoostClassifier
 import xgboost  as xgb
 import lightgbm as lgb
 import joblib
 import optuna
 optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+# ── WIN-RATE UPGRADE CONSTANTS ────────────────────────────────────────────────
+EMBARGO_DAYS   = 5    # Chai et al.: macro shocks absorbed within ~5 trading days
+N_TSCV_FOLDS   = 5    # Arif et al.: 5-fold rolling-origin expanding TSCV
 
 if sys.platform == "win32":
     os.system("chcp 65001 > nul")
@@ -39,7 +43,7 @@ THRESHOLD_OUT = os.path.join(OUTPUT_DIR, "model_threshold.json")
 
 # ── TUNABLE CONSTANTS ─────────────────────────────────────────────────────────
 CONFIDENCE_BAND = 0.65    # Raised from 0.60 → higher win rate, fewer trades
-N_OPTUNA_TRIALS = 50      # Increased from 40 for better hyperparameter search
+N_OPTUNA_TRIALS = 15      # 15 trials per model for fast efficient optimization
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 def optimal_threshold(y_true, y_prob):
@@ -58,6 +62,11 @@ def evaluate(y_true, y_prob, threshold, label):
     prec   = precision_score(y_true, y_pred, zero_division=0)
     rec    = recall_score(y_true, y_pred, zero_division=0)
     f1     = f1_score(y_true, y_pred, zero_division=0)
+    # MCC: far more informative than accuracy on imbalanced classes (Dakalbab et al.)
+    mcc    = matthews_corrcoef(y_true, y_pred)
+    # DA (Directional Accuracy): fraction where predicted sign matches actual sign
+    # For binary classification this equals accuracy, reported separately for clarity
+    da     = acc
     try:   auc = roc_auc_score(y_true, y_prob)
     except: auc = 0.5
 
@@ -71,14 +80,17 @@ def evaluate(y_true, y_prob, threshold, label):
     print(f"  [{label}]")
     print(f"{'='*60}")
     print(f"  Threshold               : {threshold:.2f}")
-    print(f"  Overall Win Rate        : {acc*100:.2f}%")
+    print(f"  Overall Win Rate (DA)   : {acc*100:.2f}%")
+    print(f"  Directional Accuracy    : {da*100:.2f}%")
+    print(f"  Matthews Corr Coeff     : {mcc:.4f}  (>0.10=signal, >0.20=good)")
     print(f"  Precision               : {prec*100:.2f}%")
     print(f"  Recall                  : {rec*100:.2f}%")
     print(f"  F1-Score                : {f1:.4f}")
     print(f"  ROC-AUC                 : {auc:.4f}")
     print(f"  ── High-Confidence ({CONFIDENCE_BAND*100:.0f}%+ filter) ──")
     print(f"  HC Win Rate             : {hc_acc*100:.2f}%  ({hc_n} signals / {len(y_true)} days)")
-    return {"acc": acc, "hc_acc": hc_acc, "hc_trades": int(hc_n), "threshold": threshold}
+    return {"acc": acc, "da": da, "mcc": mcc, "hc_acc": hc_acc,
+            "hc_trades": int(hc_n), "threshold": threshold}
 
 # ── OPTUNA TUNERS ─────────────────────────────────────────────────────────────
 def tune_catboost(X_tr, y_tr, n_trials=N_OPTUNA_TRIALS):
@@ -170,9 +182,109 @@ def tune_lightgbm(X_tr, y_tr, n_trials=N_OPTUNA_TRIALS):
     print(f"    Best AUC={study.best_value:.4f}  leaves={bp['num_leaves']} lr={bp['learning_rate']:.4f}")
     return bp
 
-# ── WALK-FORWARD PREDICTION ───────────────────────────────────────────────────
+# ── ROLLING-ORIGIN EXPANDING TSCV (Arif et al.) ──────────────────────────────
+def rolling_origin_tscv(X_df, y_series, cat_p, xgb_p, lgb_p,
+                         n_folds=N_TSCV_FOLDS, embargo_days=EMBARGO_DAYS):
+    """
+    5-fold rolling-origin expanding-window Time-Series Cross-Validation.
+    Each fold grows the training window by one fold-size increment.
+    A purge embargo of `embargo_days` rows is removed from the tail of each
+    training window to prevent feature-leakage from overlapping rolling windows
+    (Chai et al. macro digestion window = 5 trading days).
+
+    Returns:
+        all_cat, all_xgb, all_lgb  — OOF probability arrays over val+test window
+        fold_results               — per-fold dict with acc, mcc metrics
+    """
+    n = len(X_df)
+    # Split into n_folds+1 equal blocks; first block = initial training seed
+    fold_size = n // (n_folds + 1)
+
+    all_cat, all_xgb, all_lgb = [], [], []
+    fold_results = []
+
+    print(f"  [TSCV] {n_folds}-fold rolling-origin  |  "
+          f"fold_size={fold_size}  |  embargo={embargo_days}d")
+
+    for k in range(1, n_folds + 1):
+        # Training: all data up to fold boundary minus embargo
+        train_end  = k * fold_size - embargo_days
+        # Test: next fold window
+        test_start = k * fold_size
+        test_end   = min((k + 1) * fold_size, n)
+
+        if train_end < 30 or test_start >= n:
+            print(f"  [TSCV] Fold {k}: skipped (insufficient data).")
+            continue
+
+        X_tr = X_df.iloc[:train_end]
+        y_tr = y_series.iloc[:train_end]
+        X_te = X_df.iloc[test_start:test_end]
+        y_te = y_series.iloc[test_start:test_end]
+
+        # Fit all 3 base models on expanding training window
+        m_cat = CatBoostClassifier(**cat_p).fit(X_tr, y_tr)
+        m_xgb = xgb.XGBClassifier(**xgb_p)
+        m_xgb.fit(X_tr, y_tr, verbose=False)
+        m_lgb = lgb.LGBMClassifier(**lgb_p).fit(X_tr, y_tr)
+
+        p_cat = m_cat.predict_proba(X_te)[:, 1]
+        p_xgb = m_xgb.predict_proba(X_te)[:, 1]
+        p_lgb = m_lgb.predict_proba(X_te)[:, 1]
+
+        all_cat.extend(p_cat)
+        all_xgb.extend(p_xgb)
+        all_lgb.extend(p_lgb)
+
+        # Per-fold metrics
+        fold_avg = (p_cat + p_xgb + p_lgb) / 3
+        fold_pred = (fold_avg >= 0.5).astype(int)
+        fold_acc  = accuracy_score(y_te, fold_pred)
+        fold_mcc  = matthews_corrcoef(y_te, fold_pred)
+        fold_results.append({
+            'fold': k, 'train_n': len(X_tr), 'test_n': len(X_te),
+            'accuracy': fold_acc, 'mcc': fold_mcc
+        })
+        print(f"  [TSCV] Fold {k}/{n_folds}  "
+              f"train={len(X_tr):>4}  test={len(X_te):>4}  "
+              f"acc={fold_acc*100:.1f}%  MCC={fold_mcc:.3f}  done.")
+
+    # Print per-fold summary table (Arif et al. recommendation)
+    print("\n  Per-Fold TSCV Summary:")
+    print("  ┌─────┬───────────┬──────────┬──────────┬──────────┐")
+    print("  │Fold │ Train N   │ Test N   │  Acc %   │  MCC     │")
+    print("  ├─────┼───────────┼──────────┼──────────┼──────────┤")
+    for r in fold_results:
+        print(f"  │  {r['fold']}  │ {r['train_n']:>8,} │"
+              f" {r['test_n']:>7,}  │ {r['accuracy']*100:>6.2f}%  │"
+              f" {r['mcc']:>7.4f}  │")
+    if fold_results:
+        avg_acc = np.mean([r['accuracy'] for r in fold_results])
+        avg_mcc = np.mean([r['mcc'] for r in fold_results])
+        std_acc = np.std( [r['accuracy'] for r in fold_results])
+        print("  ├─────┼───────────┼──────────┼──────────┼──────────┤")
+        print(f"  │ Avg │           │          │ {avg_acc*100:>6.2f}%  │ {avg_mcc:>7.4f}  │")
+        print(f"  │ Std │           │          │ {std_acc*100:>6.2f}%  │          │")
+        print("  └─────┴───────────┴──────────┴──────────┴──────────┘")
+        fold_var = std_acc * 100
+        if fold_var < 5:
+            print(f"  Stability: GOOD  (fold-to-fold σ={fold_var:.1f}% < 5%)")
+        elif fold_var < 10:
+            print(f"  Stability: MODERATE  (fold-to-fold σ={fold_var:.1f}%, watch regime shifts)")
+        else:
+            print(f"  Stability: POOR  (fold-to-fold σ={fold_var:.1f}%, high regime sensitivity)")
+
+    return np.array(all_cat), np.array(all_xgb), np.array(all_lgb), fold_results
+
+
+# ── LEGACY walk_forward kept for backward compatibility ──────────────────────
 def walk_forward(X_train_df, y_train, X_test_df, y_test,
-                 cat_p, xgb_p, lgb_p, chunk_size=60):
+                 cat_p, xgb_p, lgb_p, chunk_size=60,
+                 embargo_days=EMBARGO_DAYS):
+    """
+    Fixed-chunk walk-forward with purge embargo.
+    Used for the final val+test combined evaluation pass.
+    """
     all_cat, all_xgb, all_lgb = [], [], []
     cur_X, cur_y = X_train_df.copy(), y_train.copy()
     total_chunks = int(np.ceil(len(X_test_df) / chunk_size))
@@ -183,10 +295,14 @@ def walk_forward(X_train_df, y_train, X_test_df, y_test,
         chunk_X = X_test_df.iloc[s:e]
         chunk_y = y_test.iloc[s:e]
 
-        m_cat = CatBoostClassifier(**cat_p).fit(cur_X, cur_y)
+        # Purge embargo: exclude last `embargo_days` rows from training window
+        emb_X = cur_X.iloc[:-embargo_days] if len(cur_X) > embargo_days else cur_X
+        emb_y = cur_y.iloc[:-embargo_days] if len(cur_y) > embargo_days else cur_y
+
+        m_cat = CatBoostClassifier(**cat_p).fit(emb_X, emb_y)
         m_xgb = xgb.XGBClassifier(**xgb_p)
-        m_xgb.fit(cur_X, cur_y, verbose=False)
-        m_lgb = lgb.LGBMClassifier(**lgb_p).fit(cur_X, cur_y)
+        m_xgb.fit(emb_X, emb_y, verbose=False)
+        m_lgb = lgb.LGBMClassifier(**lgb_p).fit(emb_X, emb_y)
 
         all_cat.extend(m_cat.predict_proba(chunk_X)[:, 1])
         all_xgb.extend(m_xgb.predict_proba(chunk_X)[:, 1])
@@ -198,15 +314,27 @@ def walk_forward(X_train_df, y_train, X_test_df, y_test,
 
     return np.array(all_cat), np.array(all_xgb), np.array(all_lgb)
 
-# ── SIGNAL QUALIFICATION ──────────────────────────────────────────────────────
-def qualify_signal(prob_up, p_cat, p_xgb, p_lgb, long_thresh, short_thresh,
-                   rsi_regime=None, high_vol=None):
+# ── SIGNAL QUALIFICATION — CONSENSUS + COMPULSORY-AGENT (Hernes et al.) ───────
+def qualify_signal_consensus(prob_up, p_cat, p_xgb, p_lgb, long_thresh, short_thresh,
+                             rsi_regime=None, high_vol=None):
     """
-    Apply multi-gate filtering to determine the final signal.
-    Uses adaptive thresholds instead of hardcoded confidence_band.
+    Hernes et al. A-Trader Consensus + Compulsory-Agent strategy.
+
+    Improvements over flat majority-vote (MyStrategy — worst in their comparison):
+      1. COMPULSORY VETO: volatility & RSI regime can unconditionally block signals
+         regardless of model agreement (Evolution-style agent compulsion).
+      2. CONSENSUS: use median-sorted model probability as confirmation gate
+         rather than simple average/vote — more robust to individual model outliers.
+
     Returns: "LONG" | "SHORT" | "NEUTRAL"
     """
-    # Gate 1: Adaptive percentile thresholds
+    # ── GATE 1 (COMPULSORY): High-volatility veto ─────────────────────────────
+    # Volatility regime agent is COMPULSORY — it vetoes regardless of model votes.
+    # Hernes et al.: certain agents in Evolution strategy have compulsory=True flag.
+    if high_vol is not None and high_vol == 1:
+        return "NEUTRAL"
+
+    # ── GATE 2: Adaptive percentile thresholds ────────────────────────────────
     if prob_up >= long_thresh:
         raw_signal = "LONG"
     elif prob_up <= short_thresh:
@@ -214,31 +342,43 @@ def qualify_signal(prob_up, p_cat, p_xgb, p_lgb, long_thresh, short_thresh,
     else:
         return "NEUTRAL"
 
-    # Gate 2: Ensemble consensus — majority 2/3 (relaxed from unanimous 3/3)
-    models_bullish = sum(1 for p in [p_cat, p_xgb, p_lgb] if p > 0.50)
-    models_bearish = sum(1 for p in [p_cat, p_xgb, p_lgb] if p < 0.50)
-    if raw_signal == "LONG" and models_bullish < 2:
-        return "NEUTRAL"
-    elif raw_signal == "SHORT" and models_bearish < 2:
-        return "NEUTRAL"
+    # ── GATE 3: Consensus (median-sorted probability, Hernes et al.) ──────────
+    # Compare median of sorted model probabilities against mid_thresh baseline
+    # rather than hardcoded 0.50 (since probabilities cluster around distribution mean).
+    mid_thresh = (long_thresh + short_thresh) / 2.0
+    sorted_probs = sorted([p_cat, p_xgb, p_lgb])
+    consensus_prob = sorted_probs[1]  # median
+    if raw_signal == "LONG"  and consensus_prob < mid_thresh:
+        return "NEUTRAL"   # Meta-learner says LONG but consensus is below baseline
+    if raw_signal == "SHORT" and consensus_prob > mid_thresh:
+        return "NEUTRAL"   # Meta-learner says SHORT but consensus is above baseline
 
-    # Gate 3: RSI Regime filter (if provided)
+    # ── GATE 4 (COMPULSORY): RSI Regime veto ─────────────────────────────────
+    # RSI regime is also compulsory — structural overbought/oversold vetoes signal.
     if rsi_regime is not None:
-        if raw_signal == "LONG"  and rsi_regime == 1:  return "NEUTRAL"  # Overbought — no LONG
-        if raw_signal == "SHORT" and rsi_regime == -1: return "NEUTRAL"  # Oversold  — no SHORT
-
-    # Gate 4: Volatility regime filter — skip high-vol days
-    if high_vol is not None and high_vol == 1:
-        return "NEUTRAL"
+        if raw_signal == "LONG"  and rsi_regime == 1:  return "NEUTRAL"  # Overbought
+        if raw_signal == "SHORT" and rsi_regime == -1: return "NEUTRAL"  # Oversold
 
     return raw_signal
+
+
+# Alias kept for any external callers
+def qualify_signal(prob_up, p_cat, p_xgb, p_lgb, long_thresh, short_thresh,
+                   rsi_regime=None, high_vol=None):
+    """Backward-compatible alias — delegates to consensus implementation."""
+    return qualify_signal_consensus(
+        prob_up, p_cat, p_xgb, p_lgb, long_thresh, short_thresh,
+        rsi_regime, high_vol
+    )
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 def main():
     print("=" * 60)
-    print("  PHASE 12 (ENHANCED): 3-MODEL OPTIMAL ENSEMBLE ENGINE")
+    print("  PHASE 12 Enhanced v2: 3-MODEL OPTIMAL ENSEMBLE ENGINE")
     print("  CatBoost + XGBoost + LightGBM + Meta-Learner")
-    print(f"  Confidence Band: {CONFIDENCE_BAND*100:.0f}%  |  Optuna Trials: {N_OPTUNA_TRIALS}")
+    print(f"  Confidence Band : {CONFIDENCE_BAND*100:.0f}%  |  Optuna Trials: {N_OPTUNA_TRIALS}")
+    print(f"  Embargo Days    : {EMBARGO_DAYS}  |  TSCV Folds   : {N_TSCV_FOLDS}")
+    print(f"  Signal Logic    : Consensus + Compulsory-Agent (Hernes et al.)")
     print("=" * 60)
 
     # Step 1: Load
@@ -247,7 +387,18 @@ def main():
     df['Date'] = pd.to_datetime(df['Date'])
     df = df.sort_values('Date').reset_index(drop=True)
 
-    X = df.drop(columns=['Date', 'Target_Direction'])
+    # ── Feature matrix: explicitly exclude all target-derived columns ────────────
+    # SHAP WARNING: 'Target_SD_3class' was flagged as 13x dominant feature
+    # because it is a target-derived label, NOT a predictive feature.
+    # These columns must NEVER appear in X.
+    EXCLUDE_COLS = [
+        'Date',
+        'Target_Direction',     # primary target
+        'Target_SD_Binary',     # SD-based label variant — derived from target return
+        'Target_SD_3class',     # SD-based 3-class label — derived from target return
+        'Next_Day_Return',      # raw next-day return — direct future lookahead
+    ]
+    X = df.drop(columns=[c for c in EXCLUDE_COLS if c in df.columns])
     y = df['Target_Direction']
 
     # Extract RSI_Regime and High_Vol_Regime columns for signal qualification (not used as features)
@@ -281,40 +432,46 @@ def main():
     xgb_p = tune_xgboost(X_train_sc, y_train_raw, n_trials=N_OPTUNA_TRIALS)
     lgb_p = tune_lightgbm(X_train_sc, y_train_raw, n_trials=N_OPTUNA_TRIALS)
 
-    # Step 4: Walk-Forward on Val + Test combined
-    print("\n=== Step 4: Walk-Forward Evaluation ===")
+    # Step 3b: Rolling-Origin Expanding TSCV — diagnostic pass (Arif et al.)
+    print(f"\n=== Step 3b: Rolling-Origin TSCV ({N_TSCV_FOLDS}-fold, embargo={EMBARGO_DAYS}d) ===")
+    X_all_sc = pd.concat([X_train_sc, X_val_sc, X_test_sc]).reset_index(drop=True)
+    y_all    = pd.concat([y_train_raw, y_val_raw, y_test_raw]).reset_index(drop=True)
+    _, _, _, tscv_fold_results = rolling_origin_tscv(
+        X_all_sc, y_all, cat_p, xgb_p, lgb_p,
+        n_folds=N_TSCV_FOLDS, embargo_days=EMBARGO_DAYS
+    )
+
+    # Step 4: Walk-Forward on Val + Test combined (with embargo)
+    print(f"\n=== Step 4: Walk-Forward Evaluation (chunk=60, embargo={EMBARGO_DAYS}d) ===")
     X_wf = pd.concat([X_val_sc, X_test_sc]).reset_index(drop=True)
     y_wf = pd.concat([y_val_raw, y_test_raw]).reset_index(drop=True)
 
     cat_p_wf, xgb_p_wf, lgb_p_wf = walk_forward(
         X_train_sc, y_train_raw,
         X_wf, y_wf,
-        cat_p, xgb_p, lgb_p, chunk_size=60
+        cat_p, xgb_p, lgb_p, chunk_size=60, embargo_days=EMBARGO_DAYS
     )
 
-    # Step 5: Stacked Meta-Learner on Val set
-    print("\n=== Step 5: Meta-Learner Stacking ===")
+    # Step 5: Ensemble Stacking (Average of Base Model Probabilities)
+    # Note: Fitting LogisticRegression on tiny validation sample (26 rows)
+    # caused coefficient compression (probs squashed to 0.57-0.61).
+    # Average weighting preserves the full dynamic range [0.10 → 0.90] of base models.
+    print("\n=== Step 5: Ensemble Aggregation (Equal Weighting) ===")
     val_n = len(X_val_sc)
-    val_stack = np.column_stack([cat_p_wf[:val_n], xgb_p_wf[:val_n], lgb_p_wf[:val_n]])
-    meta = LogisticRegression(C=1.0, max_iter=1000, random_state=42)
-    meta.fit(val_stack, y_wf[:val_n].values)
-    print(f"  Meta-learner weights: CatBoost={meta.coef_[0][0]:.3f}  "
-          f"XGB={meta.coef_[0][1]:.3f}  LGB={meta.coef_[0][2]:.3f}")
+    val_meta_probs = (cat_p_wf[:val_n] + xgb_p_wf[:val_n] + lgb_p_wf[:val_n]) / 3.0
 
     # Step 6: Calibrated Threshold on Val portion
-    print("\n=== Step 6: Calibrated Threshold (Meta-Learner) ===")
-    val_meta_probs = meta.predict_proba(val_stack)[:, 1]
+    print("\n=== Step 6: Calibrated Threshold ===")
     best_t  = optimal_threshold(y_wf[:val_n].values, val_meta_probs)
     print(f"  Calibrated threshold: {best_t:.2f}")
 
     with open(THRESHOLD_OUT, 'w') as f:
         json.dump({"threshold": best_t, "confidence_band": CONFIDENCE_BAND,
-                   "ensemble": "catboost+xgboost+lightgbm"}, f)
+                   "ensemble": "catboost+xgboost+lightgbm_mean"}, f)
 
     # Step 7: Evaluate on Test set
     print("\n=== Step 7: Final Test Evaluation ===")
-    test_stack  = np.column_stack([cat_p_wf[val_n:], xgb_p_wf[val_n:], lgb_p_wf[val_n:]])
-    test_probs  = meta.predict_proba(test_stack)[:, 1]
+    test_probs   = (cat_p_wf[val_n:] + xgb_p_wf[val_n:] + lgb_p_wf[val_n:]) / 3.0
     y_test_align = y_wf[val_n:].values
     results = evaluate(y_test_align, test_probs, best_t, "Phase 12 Enhanced Ensemble")
 
@@ -327,12 +484,18 @@ def main():
     test_rsi_regime = rsi_regime_col[test_start:] if rsi_regime_col is not None else [None]*len(test_probs)
     test_high_vol   = high_vol_col[test_start:]   if high_vol_col   is not None else [None]*len(test_probs)
 
+    n_long = n_short = n_neutral = 0
     signals = []
     for i, (prob, pcat, pxgb, plgb, rsi, hvol) in enumerate(zip(
             test_probs, cat_p_wf[val_n:], xgb_p_wf[val_n:], lgb_p_wf[val_n:],
             test_rsi_regime, test_high_vol)):
-        sig = qualify_signal(prob, pcat, pxgb, plgb, long_thresh, short_thresh, rsi, hvol)
+        # Use consensus+compulsory signal aggregation (Hernes et al.)
+        sig = qualify_signal_consensus(prob, pcat, pxgb, plgb,
+                                       long_thresh, short_thresh, rsi, hvol)
         signals.append(sig)
+        if sig == "LONG":    n_long    += 1
+        elif sig == "SHORT": n_short   += 1
+        else:                n_neutral += 1
 
     # Save predictions — BUG FIX: use test_start not (train_size + val_n)
     test_dates = df['Date'].iloc[test_start:].values
@@ -379,13 +542,26 @@ def main():
     print(f"  LightGBM saved : {MODEL_LGB_OUT}")
     print(f"  Meta-learner   : {MODEL_META_OUT}")
 
+    # Print TSCV stability summary
+    if tscv_fold_results:
+        tscv_accs = [r['accuracy'] for r in tscv_fold_results]
+        tscv_mccs = [r['mcc'] for r in tscv_fold_results]
+        print(f"\n  TSCV Cross-Validation Summary ({N_TSCV_FOLDS} folds):")
+        print(f"    Avg Acc  : {np.mean(tscv_accs)*100:.2f}%  "
+              f"(σ={np.std(tscv_accs)*100:.2f}%)")
+        print(f"    Avg MCC  : {np.mean(tscv_mccs):.4f}  "
+              f"(σ={np.std(tscv_mccs):.4f})")
+
     print("\n" + "="*60)
-    print("  PHASE 12 COMPLETE (ENHANCED)")
-    print(f"  Overall Win Rate     : {results['acc']*100:.2f}%")
+    print("  PHASE 12 v2 COMPLETE — Consensus+Compulsory Signal Logic")
+    print(f"  Overall Win Rate (DA): {results['acc']*100:.2f}%")
+    print(f"  MCC                  : {results['mcc']:.4f}")
     print(f"  HC Win Rate ({CONFIDENCE_BAND*100:.0f}%+) : {results['hc_acc']*100:.2f}%")
     print(f"  HC Signals Issued    : {results['hc_trades']}")
     print(f"  Threshold            : {best_t:.2f}")
-    print(f"  Confidence Band      : {CONFIDENCE_BAND:.2f}")
+    print(f"  Embargo Days         : {EMBARGO_DAYS}")
+    print(f"  TSCV Folds           : {N_TSCV_FOLDS}")
+    print(f"  Signal Logic         : Consensus + Compulsory-Agent")
     print("="*60)
 
 if __name__ == "__main__":

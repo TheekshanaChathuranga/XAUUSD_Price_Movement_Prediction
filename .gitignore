@@ -17,5 +17,14 @@ venv/
 catboost_info/
 *.cbm
 *.pkl
+*.pt
 lgb_prod.txt
 xgb_prod.json
+*.db
+
+# Documents and build artifacts
+*.docx
+*.pdf
+Relevant/
+node_modules/
+.next/

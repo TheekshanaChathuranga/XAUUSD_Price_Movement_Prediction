@@ -354,11 +354,22 @@ def main():
     master = pd.merge(prices, macro, on='Date', how='inner')
     master = pd.merge(master, daily_sent, on='Date', how='inner')
 
-    # Macro lags
+    # Macro lags \u2014 priority series get full 1-5 day structure (Chai et al.)
+    # WTI ~89% of gold forecast error variance; VIX 4-7.5% growing contribution.
+    # DXY and others fully absorbed within 5 days; lags 1+3 sufficient.
+    PRIORITY_MACRO_STEP5 = ['WTI_Crude_Oil', 'VIX_Index']
     macro_cols = [c for c in macro.columns if c != 'Date']
     for col in macro_cols:
-        master[f'{col}_Lag_1'] = master[col].shift(1)
-        master[f'{col}_Lag_3'] = master[col].shift(3)
+        if col in PRIORITY_MACRO_STEP5:
+            # Full 1-5 day lag structure
+            for lag in [1, 2, 3, 4, 5]:
+                master[f'{col}_Lag_{lag}'] = master[col].shift(lag)
+        else:
+            # Standard 1+3 day lags for lower-importance series
+            master[f'{col}_Lag_1'] = master[col].shift(1)
+            master[f'{col}_Lag_3'] = master[col].shift(3)
+    print(f"  Priority macro (lags 1-5): {PRIORITY_MACRO_STEP5}")
+    print(f"  Standard macro (lags 1,3): {[c for c in macro_cols if c not in PRIORITY_MACRO_STEP5]}")
 
     # Sentiment memory features (using gold-impact score)
     master['Sentiment_Lag_1']   = master['Mean_Gold_Impact'].shift(1)
@@ -459,16 +470,33 @@ def main():
         (master['RSI_14'] > 65) & (master['VP_Short_Bias_60'] == 1), 'RSI_VP_Confirm'
     ] = -1
 
-    # Fill any VP NaNs (early rows where lookback insufficient)
+    # New Cross-Interactions: CVD and VWAP
+    # VWAP Distance: How far is price from 60-day VWAP? (Stationary ratio)
+    master['VWAP_Distance_60'] = (master['Close'] - master['VWAP_60']) / (master['VWAP_60'] + 1e-9)
+
+    # CVD Momentum: Trend of cumulative volume delta (using 20-day vs 60-day)
+    # If short term CVD is higher than long term CVD, volume delta is accelerating
+    master['CVD_Momentum'] = (master['CVD_20'] - master['CVD_60']) / (master['Tick_Volume'].rolling(60).mean() + 1e-9)
+
+    # CVD x Sentiment: Strong bullish sentiment confirmed by positive volume delta
+    master['CVD_Sentiment_Signal'] = master['CVD_20'] * master['Mean_Gold_Impact']
+
+    # Separate absolute price columns from relative indicators
+    absolute_price_cols = [c for c in master.columns if c.startswith(('POC_', 'VAH_', 'VAL_', 'VWAP_')) and c.count('_') == 1]
+    # For POC_60, VAH_60, etc., we forward/backward fill so they don't become 0
+    if absolute_price_cols:
+        master[absolute_price_cols] = master[absolute_price_cols].ffill().bfill()
+
+    # Fill any other VP NaNs (early rows where lookback insufficient) with 0.0
     vp_cols = [c for c in master.columns if any(
         c.startswith(p) for p in [
-            'POC', 'VAH', 'VAL', 'VArea', 'Price_vs', 'In_HVN', 'In_LVN',
-            'Vol_Imbalance', 'VP_', 'POC_Distance', 'POC_War', 'VArea_Macro'
+            'VArea', 'Price_vs', 'In_HVN', 'In_LVN', 'LVN_Rejection',
+            'Vol_Imbalance', 'VP_', 'POC_Distance', 'POC_War', 'VArea_Macro', 'CVD'
         ]
-    )]
+    ) and c not in absolute_price_cols]
     master[vp_cols] = master[vp_cols].fillna(0.0)
 
-    vp_new_cols = ['POC_War_Signal', 'VArea_Macro_Risk', 'RSI_VP_Confirm']
+    vp_new_cols = ['POC_War_Signal', 'VArea_Macro_Risk', 'RSI_VP_Confirm', 'VWAP_Distance_60', 'CVD_Momentum', 'CVD_Sentiment_Signal']
     print("  Volume Profile features merged. New interaction columns:")
     for col in vp_new_cols:
         print(f"    ✓ {col}")

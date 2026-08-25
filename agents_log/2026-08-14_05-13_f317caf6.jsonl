@@ -1,0 +1,332 @@
+// SESSION: f317caf6-8606-409e-a497-98fe0741e937
+// TRIGGER: Manual force-run via /api/agent-run
+// FINAL: REJECT | HOLD | lot=0.00
+// COST: $0.00333 | LATENCY: 20084ms
+
+{
+  "session_id": "f317caf6-8606-409e-a497-98fe0741e937",
+  "timestamp_utc": "2026-08-14T05:13:11.928643+00:00",
+  "trigger_reason": "Manual force-run via /api/agent-run",
+  "technical_specialist": {
+    "trend_direction": "BEARISH",
+    "ema_alignment": "Price is below EMA50 indicating a bearish trend.",
+    "momentum_state": "MACD is bullish as the MACD line is above the signal line.",
+    "macd_crossover": false,
+    "volatility_regime": "HIGH",
+    "bb_squeeze": true,
+    "bb_position": "Price is near the lower Bollinger Band.",
+    "rsi_value": 68.81,
+    "rsi_overbought": false,
+    "rsi_oversold": false,
+    "confidence_score": 0.65,
+    "signal_conflicts": [],
+    "summary": "The current XAU/USD analysis shows a bearish trend with price below the EMA50. The RSI is approaching overbought territory but is not yet over 70. The MACD indicates bullish momentum, but the high volatility regime suggests caution. Bollinger Bands are squeezing, indicating a potential breakout."
+  },
+  "quantitative_specialist": {
+    "quant_prob_up": 0.62,
+    "quant_signal": "BUY",
+    "quant_consensus": true,
+    "catboost_prob": 0.6,
+    "xgboost_prob": 0.63,
+    "lightgbm_prob": 0.61,
+    "long_threshold": 0.8435,
+    "short_threshold": 0.4853,
+    "confidence_score": 0.0,
+    "summary": "The ensemble indicates a BUY signal with a consensus from the models, as all three base models show probabilities above the short threshold."
+  },
+  "macro_svar_specialist": {
+    "macro_bias": "BEARISH",
+    "bias_strength": "WEAK",
+    "dominant_driver": "OIL",
+    "oil_return_5d": -0.86,
+    "oil_shock_active": false,
+    "oil_shock_direction": "NEUTRAL",
+    "vix_level": 14.63,
+    "vix_direction": "BEARISH",
+    "vix_above_panic": false,
+    "dxy_level": 99.87,
+    "dxy_direction": "BEARISH",
+    "dxy_impact_weight": "LOW",
+    "digestion_window_status": "NONE",
+    "days_since_last_shock": null,
+    "chai_2021_narrative": "Current environment shows a bearish macro bias driven primarily by oil returns, which are negative but not indicative of an oil shock. VIX is bearish, contributing weakly to the overall sentiment. DXY is also bearish but has minimal impact. Overall, the market is not digesting any recent shocks as there are none present.",
+    "confidence_score": 0.4,
+    "summary": "Current macro environment is bearish for gold, primarily driven by weak oil returns and bearish VIX. No significant shocks are present."
+  },
+  "policy_fred_specialist": {
+    "policy_bias": "BEARISH",
+    "fed_funds_rate": "3.63%",
+    "us_10y_yield": "4.7%",
+    "cpi_us": "332.813",
+    "unemployment_rate": "4.1%",
+    "real_gdp_growth": "1.5%",
+    "fed_policy_stance": "HAWKISH",
+    "macro_risk_factor": "Rising interest rates",
+    "confidence_score": 0.85,
+    "summary": "Current Fed Funds Rate at 3.63% and US 10Y Yield at 4.7% indicate a hawkish stance. CPI inflation remains elevated, while GDP growth is modest at 1.5%. Unemployment is stable at 4.1%, suggesting macroeconomic risks from rising interest rates."
+  },
+  "sentiment_specialist": {
+    "sentiment_direction": "BEARISH",
+    "sentiment_intensity": "WEAK",
+    "finbert_score": -0.0568,
+    "vader_score": -0.0246,
+    "blended_score": -0.0472,
+    "headline_sample": [
+      "Gold , silver rally as CPI cools but oil keeps Fed risk alive - Kitco AM Report",
+      "How to trade gold as the Fed rate hike and inflation odds shifts",
+      "Gold rises to over two - month peak as US inflation data dampens rate hike bets",
+      "Gold and silver ease as CPI risk steadies yields and the dollar - Kitco AM Report",
+      "The Price of Gold Today , August 11 , 2026 and the Best Places to Buy"
+    ],
+    "news_volume_24h": 7675,
+    "confidence_score": 0.65,
+    "summary": "The overall sentiment for gold is bearish with a weak intensity, as indicated by the blended score. Recent headlines reflect mixed signals, with some suggesting a rally due to cooling CPI, while others indicate easing prices amidst steady yields and dollar strength."
+  },
+  "geopolitical_gdelt_specialist": {
+    "geopolitical_bias": "BEARISH",
+    "active_gdelt_categories": [
+      "WAR_GEOPOLITICAL"
+    ],
+    "high_impact_event_active": false,
+    "war_geopolitical_active": true,
+    "war_geo_impact_score": -0.6962,
+    "fed_policy_impact_score": -0.2339,
+    "geo_surge_score": -0.4352,
+    "news_surprise_score": -0.235,
+    "confidence_score": 0.5,
+    "summary": "Current geopolitical conditions indicate a bearish bias due to active WAR_GEOPOLITICAL events, with negative impact scores suggesting heightened tensions and uncertainty."
+  },
+  "calendar_specialist": {
+    "event_window_active": false,
+    "volatility_flag": "CLEAR",
+    "events_within_2h": [],
+    "events_within_24h": [],
+    "caution_level": 0,
+    "next_high_impact_event": null,
+    "confidence_score": 1.0,
+    "summary": "No high-impact events are scheduled within the next 24 hours. Normal risk is advised."
+  },
+  "technical_quant_synthesis": {
+    "combined_bias": "NEUTRAL",
+    "synthesis_rationale": "The technical indicators suggest a bearish trend with price below the EMA50 and a high volatility regime, while the MACD shows bullish momentum. However, the quantitative analysis indicates a BUY signal with a consensus probability of 0.6200 from the ensemble models. This divergence between the bearish technical indicators and the bullish quantitative signal leads to a neutral overall bias, as the conflicting signals balance each other out.",
+    "confluence_indicators": [
+      "MACD (bullish momentum)",
+      "Ensemble Signal (BUY)"
+    ],
+    "divergence_indicators": [
+      "EMA Alignment (bearish)",
+      "Trend Direction (BEARISH)",
+      "RSI Value (68.8)"
+    ],
+    "overall_confidence": 0.5,
+    "summary": "Current analysis shows a neutral bias for XAU/USD. Technical indicators point bearish with price below EMA50 and high volatility, while quantitative models suggest a BUY signal with a consensus probability of 0.6200. The conflicting signals result in a balanced outlook."
+  },
+  "macro_sentiment_synthesis": {
+    "combined_bias": "BEARISH",
+    "synthesis_rationale": "The macro environment is predominantly bearish for gold, driven by weak oil returns and a hawkish policy stance from the Fed, which is raising interest rate risks. Sentiment is also bearish, albeit weakly, with mixed signals from recent headlines. Geopolitical tensions further contribute to the negative outlook, despite no immediate shocks or high-impact events on the calendar. The overall bearish sentiment aligns with the macro drivers of oil and VIX, which are both pointing downwards, while the DXY trend remains bearish but with minimal impact.",
+    "key_macro_drivers": [
+      "OIL",
+      "VIX",
+      "DXY"
+    ],
+    "sentiment_alignment": "Blended sentiment is bearish, aligning with the macro trend despite some mixed signals in recent headlines.",
+    "event_risk_caution": 0.0,
+    "overall_confidence": 0.6,
+    "summary": "The macro outlook for gold is bearish, influenced by weak oil returns, a hawkish Fed, and negative geopolitical conditions. Sentiment remains weakly bearish with no immediate calendar risks."
+  },
+  "trader_proposal": {
+    "direction": "HOLD",
+    "confidence_score": 0.55,
+    "proposed_sl_pips": 500.0,
+    "proposed_tp_pips": 1000.0,
+    "proposed_lot_size": 0.1,
+    "implied_rr_ratio": 2.0,
+    "quant_signal_in": "BUY",
+    "quant_prob_up": 0.62,
+    "quant_signal_override": false,
+    "override_rationale": null,
+    "synthesis_basis": [
+      "Technical indicators suggest bearish trend with price below EMA50.",
+      "MACD shows bullish momentum but is countered by bearish EMA alignment and trend direction.",
+      "Quantitative analysis indicates a BUY signal with a consensus probability of 0.6200.",
+      "Macro environment is predominantly bearish due to weak oil returns and hawkish Fed policy.",
+      "Overall sentiment is weakly bearish with no immediate calendar risks."
+    ],
+    "rationale": "The analysis presents conflicting signals with a neutral technical bias and a bearish macro sentiment. Given the divergence between the bullish quantitative signal and the bearish technical indicators, it is prudent to hold off on entering a trade until clearer signals emerge."
+  },
+  "risk_assessments": [
+    {
+      "agent_type": "RISKY",
+      "regime_weight": 0.15,
+      "recommendation": "LONG",
+      "size_adjustment_factor": 1.0,
+      "key_concerns": [
+        "Current market regime is PANIC, indicating high volatility and potential for rapid price movements.",
+        "Conflicting signals between bullish quant indicators and bearish technical analysis may lead to unexpected losses.",
+        "High RSI value (68.8) suggests that the asset may be overbought, increasing the risk of a pullback."
+      ],
+      "rationale": "Despite the current PANIC regime and conflicting signals, the strong quant signal (P_up=0.6200) indicates a favorable opportunity for a long position. The potential reward of 1000 pips against a 500 pip stop loss presents a solid risk-reward ratio of 1:2.0. Given the quant strength and the possibility of a bullish reversal, taking the trade at full size is justified."
+    },
+    {
+      "agent_type": "NEUTRAL",
+      "regime_weight": 0.3,
+      "recommendation": "HOLD",
+      "size_adjustment_factor": 0.5,
+      "key_concerns": [
+        "High volatility in the current market regime (PANIC)",
+        "Conflicting signals between quantitative and technical analysis",
+        "Bearish macro sentiment with potential for further downside"
+      ],
+      "rationale": "Given the current PANIC regime and the conflicting signals from technical and quantitative analyses, a HOLD decision is prudent. The bearish macro sentiment and high volatility suggest caution, warranting a size adjustment to mitigate risk while waiting for clearer signals."
+    },
+    {
+      "agent_type": "SAFE",
+      "regime_weight": 0.55,
+      "recommendation": "HOLD",
+      "size_adjustment_factor": 0.0,
+      "key_concerns": [
+        "Conflicting signals between bullish quantitative analysis (P_up=0.6200) and bearish technical indicators (EMA Alignment, Trend Direction)",
+        "Impending macro events affecting market sentiment (bearish bias with weak oil returns, hawkish Fed)",
+        "High volatility indicated by RSI value (68.8) and market regime classified as PANIC"
+      ],
+      "rationale": "The current market conditions present significant risks due to conflicting signals from technical and quantitative analyses, alongside a bearish macro sentiment. With the market in a PANIC regime and high volatility, it is prudent to hold off on entering a trade until clearer signals emerge."
+    }
+  ],
+  "market_regime": "PANIC",
+  "fund_manager_decision": {
+    "final_decision": "REJECT",
+    "final_direction": "HOLD",
+    "final_lot_size": 0.0,
+    "final_sl_pips": 500.0,
+    "final_tp_pips": 1000.0,
+    "size_vs_proposal": "Size reduced to 0.00 due to high risk.",
+    "risk_team_consensus": "Weighted risk consensus indicates a strong preference for holding due to conflicting signals and high volatility in the PANIC regime.",
+    "current_regime": "PANIC",
+    "quant_signal_in": "BUY",
+    "quant_prob_up": 0.62,
+    "agent_consensus": "Conflicting signals with a neutral technical bias and bearish macro sentiment lead to a cautious approach.",
+    "full_reasoning": "The quant signal indicates a BUY with a probability of 0.6200, but the technical analysis shows a neutral bias with bearish indicators. The macro sentiment is bearish, influenced by weak oil returns and a hawkish Fed. The risk team consensus, weighted heavily towards SAFE, suggests a strong preference for holding due to high volatility and conflicting signals. Therefore, I REJECT the trade proposal and set final_direction to HOLD with a final_lot_size of 0.0.",
+    "shadow_mode": false,
+    "timestamp_utc": "2026-08-14T05:13:26.778815+00:00",
+    "session_id": "f317caf6-8606-409e-a497-98fe0741e937"
+  },
+  "actual_next_day_direction": null,
+  "quant_baseline_correct": null,
+  "agent_decision_correct": null,
+  "api_calls": [
+    {
+      "agent_name": "TechnicalSpecialist",
+      "model_used": "gpt-4o-mini",
+      "input_tokens": 886,
+      "output_tokens": 170,
+      "latency_ms": 5195,
+      "cost_usd_estimate": 0.00023490000000000002
+    },
+    {
+      "agent_name": "QuantitativeSpecialist",
+      "model_used": "gpt-4o-mini",
+      "input_tokens": 535,
+      "output_tokens": 97,
+      "latency_ms": 4216,
+      "cost_usd_estimate": 0.00013844999999999998
+    },
+    {
+      "agent_name": "MacroSVARSpecialist",
+      "model_used": "gpt-4o-mini",
+      "input_tokens": 1312,
+      "output_tokens": 219,
+      "latency_ms": 3891,
+      "cost_usd_estimate": 0.0003282
+    },
+    {
+      "agent_name": "PolicyFREDSpecialist",
+      "model_used": "gpt-4o-mini",
+      "input_tokens": 558,
+      "output_tokens": 149,
+      "latency_ms": 2273,
+      "cost_usd_estimate": 0.0001731
+    },
+    {
+      "agent_name": "SentimentSpecialist",
+      "model_used": "gpt-4o-mini",
+      "input_tokens": 701,
+      "output_tokens": 208,
+      "latency_ms": 2686,
+      "cost_usd_estimate": 0.00022994999999999998
+    },
+    {
+      "agent_name": "GeopoliticalGDELTSpecialist",
+      "model_used": "gpt-4o-mini",
+      "input_tokens": 664,
+      "output_tokens": 121,
+      "latency_ms": 3049,
+      "cost_usd_estimate": 0.00017219999999999998
+    },
+    {
+      "agent_name": "CalendarSpecialist",
+      "model_used": "gpt-4o-mini",
+      "input_tokens": 810,
+      "output_tokens": 71,
+      "latency_ms": 1552,
+      "cost_usd_estimate": 0.0001641
+    },
+    {
+      "agent_name": "TechnicalQuantSynthesizer",
+      "model_used": "gpt-4o-mini",
+      "input_tokens": 668,
+      "output_tokens": 206,
+      "latency_ms": 2833,
+      "cost_usd_estimate": 0.00022380000000000002
+    },
+    {
+      "agent_name": "MacroSentimentSynthesizer",
+      "model_used": "gpt-4o-mini",
+      "input_tokens": 1001,
+      "output_tokens": 211,
+      "latency_ms": 2622,
+      "cost_usd_estimate": 0.00027675
+    },
+    {
+      "agent_name": "TraderAgent",
+      "model_used": "gpt-4o-mini",
+      "input_tokens": 1327,
+      "output_tokens": 203,
+      "latency_ms": 2783,
+      "cost_usd_estimate": 0.00032084999999999997
+    },
+    {
+      "agent_name": "Risk_RISKY",
+      "model_used": "gpt-4o-mini",
+      "input_tokens": 848,
+      "output_tokens": 184,
+      "latency_ms": 3050,
+      "cost_usd_estimate": 0.00023759999999999997
+    },
+    {
+      "agent_name": "Risk_NEUTRAL",
+      "model_used": "gpt-4o-mini",
+      "input_tokens": 843,
+      "output_tokens": 118,
+      "latency_ms": 1655,
+      "cost_usd_estimate": 0.00019725
+    },
+    {
+      "agent_name": "Risk_SAFE",
+      "model_used": "gpt-4o-mini",
+      "input_tokens": 852,
+      "output_tokens": 157,
+      "latency_ms": 2393,
+      "cost_usd_estimate": 0.000222
+    },
+    {
+      "agent_name": "FundManager",
+      "model_used": "gpt-4o-mini",
+      "input_tokens": 1670,
+      "output_tokens": 276,
+      "latency_ms": 5234,
+      "cost_usd_estimate": 0.00041610000000000003
+    }
+  ],
+  "total_cost_usd": 0.003335,
+  "total_latency_ms": 20084
+}

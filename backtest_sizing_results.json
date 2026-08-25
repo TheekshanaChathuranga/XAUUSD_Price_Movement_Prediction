@@ -1,0 +1,18 @@
+{
+  "total_trades": 81,
+  "rejected_trades": 0,
+  "win_rate_pct": 29.63,
+  "profit_factor": 0.841,
+  "expectancy_usd": -4.17,
+  "avg_win_usd": 74.64,
+  "avg_loss_usd": -37.35,
+  "max_drawdown_usd": 934.41,
+  "total_return_usd": -337.59,
+  "long_trades": 37,
+  "short_trades": 44,
+  "long_wr_pct": 32.43,
+  "short_wr_pct": 27.27,
+  "risk_per_trade_usd": 50.0,
+  "rr_ratio": 2.0,
+  "broker_note": "VERIFY PIP_VALUE_PER_LOT, MIN_LOT, LOT_INCREMENT with actual broker before live trading."
+}

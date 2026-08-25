@@ -49,13 +49,14 @@ LOG_FILE = os.path.join(LOG_DIR, "pipeline_run.log")
 # ── Step definitions (step_id, label, script, abort_on_fail) ─────────────────
 STEPS = [
     (1,    "Step 1  : XAU/USD Price Collection",        "step1_collect_xauusd.py",    True),
-    (2,    "Step 2  : FRED Macro Data Collection",       "step2_collect_macro.py",     True),
+    (2,    "Step 2  : FRED Macro + VIX Collection",      "step2_collect_macro.py",     True),
     (3,    "Step 3  : Financial News Collection",        "step3_collect_news.py",      False),
     ("3b", "Step 3B : GDELT News Collection",            "step3b_gdelt.py",            False),
     (4,    "Step 4  : Validation & Sanity Check",        "step4_validate.py",          False),
     (5,    "Step 5  : Feature Engineering + FinBERT",    "step5_preprocess_features.py", True),
     ("5b", "Step 5B : Volume Profile Features",          "step5b_volume_profile.py",   True),
     (6,    "Step 6  : Dataset Alignment & Fusion",       "step6_align_fusion.py",      True),
+    ("6b", "Step 6B : Cross-Attention Fusion (PyTorch)", "step6b_attention_fusion.py", False),
     (7,    "Step 7  : Ensemble Model Training",          "step7_train_ensemble.py",    True),
     (8,    "Step 8  : SHAP Interpretability",            "step8_shap_interpretability.py", False),
     (9,    "Step 9  : Backtest + VP Win-Rate Filters",   "step9_backtest_strategy.py", False),
