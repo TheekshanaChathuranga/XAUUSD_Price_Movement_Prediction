@@ -26,5 +26,12 @@ xgb_prod.json
 *.docx
 *.pdf
 Relevant/
-node_modules/
-.next/
+
+# Frontend builds and dependencies (recursive)
+**/node_modules/
+**/.next/
+**/.turbo/
+**/out/
+**/build/
+frontend/next-env.d.ts
+
