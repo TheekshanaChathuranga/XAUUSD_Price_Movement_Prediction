@@ -30,7 +30,7 @@ jobs:
         env:
           PYTHONPATH: .
         run: |
-          python -m unittest discover -s tests -t .
+          pytest -v tests/
 
   frontend-build:
     name: Frontend Build & Type Check
